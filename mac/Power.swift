@@ -8,23 +8,14 @@ struct PowerAccess {
 
     var code: String { powerCode(accessCode: secrets.code) }
 
-    func request(shutdown: Bool, _ completion: @escaping (Response) -> Void) {
-        let path = shutdown ? "shutdown" : "status"
+    func request(lock: Bool, _ completion: @escaping (Response) -> Void) {
+        let path = lock ? "lock" : "status"
         guard let url = URL(string: "https://\(profile.host):43821/power/\(path)") else {
             completion(.failure(.badURL))
             return
         }
         let connection = Connection(url: url, code: code, fingerprint: secrets.fingerprint)
-        connection.perform(method: shutdown ? "POST" : "GET", completion: completion)
-    }
-
-    /// Turns the VPN on or off through Happ on the Windows PC.
-    func vpn(connect: Bool, _ completion: @escaping (Response) -> Void) {
-        guard let url = URL(string: "https://\(profile.host):43821/vpn/\(connect ? "connect" : "disconnect")") else {
-            completion(.failure(.badURL))
-            return
-        }
-        Connection(url: url, code: code, fingerprint: secrets.fingerprint).perform(method: "POST", completion: completion)
+        connection.perform(method: lock ? "POST" : "GET", completion: completion)
     }
 
     func homebridgeConfig(wake: WakeTarget) throws -> String {

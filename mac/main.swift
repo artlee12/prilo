@@ -1,6 +1,13 @@
 import AppKit
+import Carbon.HIToolbox
 import CryptoKit
+import Darwin
 import Security
+
+private final class CaptureKeyPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
 
 final class Pin: NSObject, URLSessionDelegate, @unchecked Sendable {
     let fingerprint: String
@@ -121,7 +128,7 @@ final class Connection {
     }
 }
 
-final class Prilo: NSObject, NSApplicationDelegate {
+final class PriloApp: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     let status = NSMenuItem(title: "Отключено", action: nil, keyEquivalent: "")
     var connection: Connection?
@@ -132,11 +139,15 @@ final class Prilo: NSObject, NSApplicationDelegate {
     var capturePeakWrite: UInt64 = 0
     var reconnect: ConnectionWindow.Credentials?
     var retryAt: Date?
-    var retryDelay: TimeInterval = 3
+    var retryDelay: TimeInterval = 0.8
     var reconnectPaused = false
     let discovery = Discovery()
     var tap: CFMachPort?
     var tapSource: CFRunLoopSource?
+    var gestureTap: CFMachPort?
+    var gestureTapSource: CFRunLoopSource?
+    var captureKeyEvents = 0
+    var secureInputWarned = false
     var timer: Timer?
     var sending = false
     var ready = false
@@ -146,20 +157,43 @@ final class Prilo: NSObject, NSApplicationDelegate {
     var paused = false
     var window: ConnectionWindow!
     var pauseItem: NSMenuItem!
+    var sendFileItem: NSMenuItem!
+    var receiveFileItem: NSMenuItem!
+    var lockItem: NSMenuItem!
     var disconnectItem: NSMenuItem!
     var inputState: Bool?
     var attemptedTap = false
     var lastInputCheck = Date.distantPast
-    var edgePush: Int32 = 0
-    var lastEdgePush = Date.distantPast
+    var topEdgePush = TopEdgePush()
     let log = Diagnostics.shared
     let profiles = Profiles()
     let controlSettings = ControlSettings()
     let cue = HandoffCue()
+    let fileDropBar = FileDropBar()
+    var fileTransfer: FileTransfer?
+    var receiverSupportsShortcuts = false
+    var receiverSupportsFiles = false
+    var backgroundCursorEnabled = false
     var keyboard = RemoteKeyboard(commandIsControl: true)
     var pointer = PointerMotion(speed: 1)
+    var scrollMotion = ScrollMotion(smoothness: 1.0)
+    var swipeDetector = ThreeFingerSwipeDetector()
+    var pinchDetector = PinchZoomDetector()
+    var suppressedShortcutKeys: Set<Int64> = []
+    private static let gestureEventTypes: Set<UInt32> = [18, 19, 20, 29, 30, 31, 32, 33, 34, 37, 38]
     var capturedBounds = CGRect.zero
     var lastWarp = Date.distantPast
+    var lastActivateAttempt = Date.distantPast
+    var lastReinforce = Date.distantPast
+    var pendingFinderSendURLs: [URL] = []
+    var cachedTransferredFiles: [String: URL] = [:]
+    var lastReceivedFiles: [URL] = []
+    var showLastReceivedItem: NSMenuItem!
+    var offeredWindowsFiles: [OfferedFile] = []
+    var offerGeneration: UInt64 = 0
+    var latencyActivity: NSObjectProtocol?
+    let clipboardQueue = DispatchQueue(label: "com.artlee12.prilo.clipboard", qos: .utility)
+    var captureAnchor: NSPanel?
     var handoffConfirmed = false
     var remote = false
     var previousApp: NSRunningApplication?
@@ -170,10 +204,18 @@ final class Prilo: NSObject, NSApplicationDelegate {
     var lastSend = Date.distantPast
     var localButtons: Set<UInt16> = []
     var localKeys: Set<Int64> = []
+    var lastClipboardChangeCount = NSPasteboard.general.changeCount
+    var lastClipboardCheck = Date.distantPast
+    var lastSyncedClipboardHash: Data?
+    var macLocked = false
+    var lastSentAwake: Bool?
+    var lockObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         log.record("startup version=\(version) os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
+        backgroundCursorEnabled = enableBackgroundCursorControl()
+        log.record("background cursor control=\(backgroundCursorEnabled)")
         installMainMenu()
         window = ConnectionWindow(owner: self)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -189,17 +231,32 @@ final class Prilo: NSObject, NSApplicationDelegate {
         menu.addItem(status)
         menu.addItem(menuItem("Открыть Prilo", action: #selector(showWindow)))
         pauseItem = menuItem("Приостановить управление", action: #selector(togglePause))
+        sendFileItem = menuItem("Отправить файл на Windows…", action: #selector(pickAndSendFiles))
+        receiveFileItem = menuItem("Сохранить файл с Windows", action: #selector(downloadOfferedFiles))
+        receiveFileItem.isHidden = true
+        showLastReceivedItem = menuItem("Показать последний файл в Finder", action: #selector(revealLastReceivedFiles))
+        showLastReceivedItem.isHidden = true
+        lockItem = menuItem("Заблокировать Windows", action: #selector(lockWindows))
         disconnectItem = menuItem("Отключить Windows", action: #selector(disconnect))
         menu.addItem(pauseItem)
+        menu.addItem(sendFileItem)
+        menu.addItem(receiveFileItem)
+        menu.addItem(showLastReceivedItem)
+        menu.addItem(lockItem)
         menu.addItem(disconnectItem)
         menu.addItem(.separator())
         menu.addItem(updateItem)
         menu.addItem(menuItem("Скопировать журнал", action: #selector(copyDiagnostics)))
         menu.addItem(menuItem("Выйти из Prilo", action: #selector(quit)))
         item.menu = menu
+        NSApp.servicesProvider = self
+        QuickActionInstaller.installIfNeeded()
 
-        timer = Timer(timeInterval: 0.008, repeats: true) { [weak self] _ in self?.tick() }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
+        timer = Timer(timeInterval: 0.006, repeats: true) { [weak self] _ in self?.tick() }
+        if let timer {
+            timer.tolerance = 0
+            RunLoop.main.add(timer, forMode: .common)
+        }
         display(.idle)
         refreshPermissions()
         showWindow()
@@ -207,9 +264,21 @@ final class Prilo: NSObject, NSApplicationDelegate {
         discovery.didChange = { [weak self] peers in
             guard let self else { return }
             self.window.updateNearby(peers.count)
-            if self.connection == nil, let reconnect = self.reconnect,
-               peers.contains(where: { $0.fingerprint == reconnect.fingerprint }) {
-                self.retryAt = Date()
+            if let reconnect = self.reconnect,
+               let peer = peers.first(where: { $0.fingerprint == reconnect.fingerprint }) {
+                let updated = reconnect.atHost(peer.host)
+                self.reconnect = updated
+                if self.connection == nil {
+                    self.window.updateAddress(peer.host)
+                    self.retryAt = Date()
+                } else if !self.linked, self.connection?.url.host != peer.host {
+                    let savedPaused = self.paused || self.reconnectPaused
+                    self.stop()
+                    self.reconnect = updated
+                    self.reconnectPaused = savedPaused
+                    self.window.updateAddress(peer.host)
+                    self.retryAt = Date().addingTimeInterval(0.1)
+                }
             }
         }
         if let profile = profiles.last, selectProfile(profile), controlSettings.autoConnect {
@@ -219,6 +288,67 @@ final class Prilo: NSObject, NSApplicationDelegate {
         discovery.start()
         window.model.updates.onChange = { [weak self] in self?.refreshUpdateItem() }
         window.model.updates.start()
+        installLockObservers()
+    }
+
+    func installLockObservers() {
+        let distributed = DistributedNotificationCenter.default()
+        lockObservers.append(distributed.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.handleMacLocked()
+        })
+        lockObservers.append(distributed.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.handleMacUnlocked()
+        })
+        let workspace = NSWorkspace.shared.notificationCenter
+        lockObservers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleMacLocked()
+        })
+        lockObservers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleMacWake()
+        })
+    }
+
+    func handleMacWake() {
+        handleMacUnlocked()
+        discovery.restart()
+        if connection == nil, releasing == nil, reconnect != nil, controlSettings.autoConnect {
+            retryDelay = 0.8
+            retryAt = Date().addingTimeInterval(0.8)
+        }
+    }
+
+    func handleMacLocked() {
+        macLocked = true
+        if remote { leave(reason: "Mac locked") }
+        syncAwakeIfNeeded()
+        if linked && controlSettings.lockWindowsOnMacLock {
+            lockWindows()
+        }
+    }
+
+    func handleMacUnlocked() {
+        macLocked = false
+        syncAwakeIfNeeded()
+    }
+
+    func syncAwakeIfNeeded() {
+        guard linked, let channel, channel.ready else { return }
+        let desired = !macLocked && controlSettings.keepWindowsAwake
+        guard desired != lastSentAwake else { return }
+        lastSentAwake = desired
+        channel.sendAwake(desired)
+    }
+
+    @objc func lockWindows() {
+        guard let active = connection,
+              var components = URLComponents(url: active.url, resolvingAgainstBaseURL: false) else { return }
+        components.path = "/power/lock"
+        guard let lockURL = components.url else { return }
+        if remote { leave(reason: "lock windows") }
+        let powerConnection = Connection(url: lockURL, code: powerCode(accessCode: active.code), fingerprint: active.fingerprint)
+        powerConnection.perform(method: "POST") { [weak self] result in
+            self?.log.record("lock windows \(result.description)")
+        }
     }
 
     lazy var updateItem: NSMenuItem = menuItem("Проверить обновления…", action: #selector(showUpdates))
@@ -273,6 +403,33 @@ final class Prilo: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow()
         return false
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleFinderSendRequest(urls)
+    }
+
+    @objc func sendFilesFromService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = extractDraggedFileURLs(from: pboard)
+        guard !urls.isEmpty else {
+            error.pointee = "Не найдены файлы для отправки" as NSString
+            return
+        }
+        handleFinderSendRequest(urls)
+    }
+
+    private func handleFinderSendRequest(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        if linked && receiverSupportsFiles {
+            prepareAndSendToWindows(urls)
+        } else {
+            pendingFinderSendURLs = urls
+            fileDropBar.showStatus("Подключаемся к Windows — отправим после соединения…",
+                                   on: builtInScreen(), duration: 3.5)
+            if connection == nil, releasing == nil, let reconnect {
+                beginConnection(reconnect)
+            }
+        }
     }
 
     @objc func showWindow() {
@@ -406,6 +563,11 @@ final class Prilo: NSObject, NSApplicationDelegate {
                     self.connectionFailed(.failure(.badServerResponse))
                     return
                 }
+                self.receiverSupportsShortcuts = capabilities?["shortcut"] == "1"
+                self.receiverSupportsFiles = capabilities?["files"] == "1"
+                self.fileTransfer = self.receiverSupportsFiles
+                    ? FileTransfer(url: attempt.url, code: credentials.code, fingerprint: credentials.fingerprint)
+                    : nil
                 let wake = WakeTarget(mac: capabilities?["mac"] ?? "", broadcast: capabilities?["broadcast"] ?? "")
                 self.channel = stream
                 stream.onMessage = { [weak self, weak stream] event in
@@ -444,9 +606,20 @@ final class Prilo: NSObject, NSApplicationDelegate {
         reconnectPaused = false
         attemptedTap = false
         lastSend = Date()
-        retryDelay = 3
+        lastClipboardChangeCount = NSPasteboard.general.changeCount
+        lastSyncedClipboardHash = nil
+        lastSentAwake = nil
+        retryDelay = 0.8
+        if latencyActivity == nil {
+            latencyActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical],
+                reason: "Prilo remote input"
+            )
+        }
         refreshPermissions()
         updateControlStatus()
+        refreshFileMenuItems()
+        syncAwakeIfNeeded()
         do {
             let saved = try profiles.remember(name: credentials.name, host: credentials.host,
                                                id: credentials.id, secrets: PCSecrets(code: credentials.code,
@@ -461,10 +634,16 @@ final class Prilo: NSObject, NSApplicationDelegate {
             log.record("keychain save failed code=\((error as NSError).code)")
             window.notice = "Подключение работает. Связка ключей не сохранила данные для следующего запуска."
         }
+        if !pendingFinderSendURLs.isEmpty && receiverSupportsFiles {
+            let queued = pendingFinderSendURLs
+            pendingFinderSendURLs.removeAll()
+            prepareAndSendToWindows(queued)
+        }
     }
 
     func connectionFailed(_ result: Response) {
         log.record("connection lost \(result.description)")
+        let failedHost = connection?.url.host
         let wasPaused = paused || reconnectPaused
         stop()
         switch result {
@@ -478,10 +657,17 @@ final class Prilo: NSObject, NSApplicationDelegate {
             }
         case .failure(.timedOut), .failure(.cannotConnectToHost), .failure(.notConnectedToInternet),
              .failure(.networkConnectionLost), .failure(.cannotFindHost), .http(409):
-            if reconnect != nil && controlSettings.autoConnect {
+            if let saved = reconnect, controlSettings.autoConnect {
                 reconnectPaused = wasPaused
+                if let peer = discovery.computers.first(where: { $0.fingerprint == saved.fingerprint }),
+                   peer.host != failedHost {
+                    reconnect = saved.atHost(peer.host)
+                    window.updateAddress(peer.host)
+                    retryAt = Date().addingTimeInterval(0.3)
+                    return
+                }
                 retryAt = Date().addingTimeInterval(retryDelay)
-                retryDelay = min(retryDelay * 2, 20)
+                retryDelay = min(retryDelay * 2, 15)
                 display(.error(connectionMessage(result) + " Prilo попробует подключиться снова."))
                 return
             }
@@ -498,6 +684,18 @@ final class Prilo: NSObject, NSApplicationDelegate {
             if controlSettings.animate { cue.show(at: entry, entering: true) }
         case "returned" where remote && message.capture == captureID:
             leave(reason: "Windows edge")
+        case "layout" where remote && message.capture == captureID:
+            if controlSettings.showLayoutIndicator, let lang = message.text, !lang.isEmpty {
+                fileDropBar.showLayoutBadge(lang, on: builtInScreen())
+            }
+        case "clipboard":
+            if let text = message.text { applyRemoteClipboard(text) }
+        case "clipboardImage":
+            if let image = message.image { applyRemoteClipboardImage(image) }
+        case "fileOffer":
+            if let files = message.files, !files.isEmpty { handleRemoteFileOffer(files) }
+        case "fileDrop":
+            if let files = message.files, !files.isEmpty { handleRemoteFileDrop(files) }
         case "inputUnavailable": connectionFailed(.http(503))
         case "invalid": connectionFailed(.failure(.cannotParseResponse))
         default: break
@@ -607,8 +805,416 @@ final class Prilo: NSObject, NSApplicationDelegate {
         status.title = state.title
         pauseItem.isEnabled = linked
         pauseItem.title = paused ? "Возобновить управление" : "Приостановить управление"
+        refreshFileMenuItems()
+        lockItem.isEnabled = linked
         disconnectItem.isEnabled = connection != nil
         window.render(state)
+    }
+
+    func refreshFileMenuItems() {
+        sendFileItem?.isEnabled = linked && receiverSupportsFiles
+        guard let receiveFileItem else { return }
+        if !linked || !receiverSupportsFiles || offeredWindowsFiles.isEmpty {
+            receiveFileItem.isHidden = true
+            return
+        }
+        receiveFileItem.isHidden = false
+        if offeredWindowsFiles.count == 1, let first = offeredWindowsFiles.first {
+            receiveFileItem.title = "Сохранить с Windows: \(first.name) (\(FileTransfer.formatBytes(first.size)))"
+        } else {
+            let total = offeredWindowsFiles.reduce(Int64(0)) { $0 + $1.size }
+            receiveFileItem.title = "Сохранить с Windows: \(offeredWindowsFiles.count) файлов (\(FileTransfer.formatBytes(total)))"
+        }
+    }
+
+    private func builtInScreen() -> NSScreen? {
+        let targetID = CGGetOnlineBuiltInDisplay()
+        return NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == targetID
+        } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    @objc func revealLastReceivedFiles() {
+        guard !lastReceivedFiles.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(lastReceivedFiles)
+    }
+
+    @objc func pickAndSendFiles() {
+        guard linked, receiverSupportsFiles else { return }
+        if remote { leave(reason: "file picker") }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Отправить на Windows"
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, !panel.urls.isEmpty {
+            prepareAndSendToWindows(panel.urls)
+        }
+    }
+
+    func prepareAndSendToWindows(_ rawURLs: [URL]) {
+        guard linked, receiverSupportsFiles else { return }
+        let candidates = Array(rawURLs.prefix(20))
+        guard !candidates.isEmpty else { return }
+        let hasDir = candidates.contains { url in
+            let resolved = (url as NSURL).filePathURL ?? url
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDir) && isDir.boolValue
+        }
+        if !hasDir {
+            sendFilesToWindows(candidates, destination: "downloads")
+            return
+        }
+        fileDropBar.showProgress("Упаковываем папку в ZIP…", fraction: 0.08, on: builtInScreen())
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let fm = FileManager.default
+            let stagingDir = fm.temporaryDirectory.appendingPathComponent("prilo-zip-\(UUID().uuidString)", isDirectory: true)
+            try? fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+            var prepared: [URL] = []
+            for raw in candidates {
+                let url = (raw as NSURL).filePathURL ?? raw
+                var isDir: ObjCBool = false
+                guard url.isFileURL, fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
+                if !isDir.boolValue {
+                    prepared.append(url)
+                    continue
+                }
+                let baseName = url.lastPathComponent.isEmpty ? "folder" : url.lastPathComponent
+                let zipURL = FileTransfer.uniqueDestination(in: stagingDir, name: "\(baseName).zip")
+                DispatchQueue.main.async {
+                    self.fileDropBar.showProgress("Упаковываем «\(baseName)» в ZIP…", fraction: 0.12, on: self.builtInScreen())
+                }
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                proc.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", url.path, zipURL.path]
+                proc.standardOutput = Pipe()
+                proc.standardError = Pipe()
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                    if proc.terminationStatus == 0, fm.fileExists(atPath: zipURL.path) {
+                        prepared.append(zipURL)
+                    }
+                } catch {
+                    self.log.record("zip folder failed: \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async {
+                guard !prepared.isEmpty else {
+                    try? fm.removeItem(at: stagingDir)
+                    self.fileDropBar.showStatus("Не удалось подготовить файлы для отправки",
+                                                on: self.builtInScreen(), duration: 3.0)
+                    return
+                }
+                self.sendFilesToWindows(prepared, destination: "downloads", cleanupDir: stagingDir)
+            }
+        }
+    }
+
+    @objc func downloadOfferedFiles() {
+        guard linked, receiverSupportsFiles, let transfer = fileTransfer, !offeredWindowsFiles.isEmpty else { return }
+        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+        let batch = offeredWindowsFiles
+        transferBatchFromWindows(batch, using: transfer, into: downloadsDir, logPrefix: "downloaded")
+    }
+
+    private func downloadBatch(_ files: [OfferedFile], using transfer: FileTransfer, into directory: URL,
+                               onProgress: @escaping (Int64, Int64, Double) -> Void,
+                               completion: @escaping ([URL], Error?) -> Void) {
+        let totalExpected = max(Int64(1), files.reduce(Int64(0)) { $0 + max(0, $1.size) })
+        let start = Date()
+        var perFileBytes = [Int64](repeating: 0, count: files.count)
+        var results = [URL?](repeating: nil, count: files.count)
+        var firstError: Error?
+        var nextIndex = 0
+        var active = 0
+        let maxConcurrent = min(3, files.count)
+        var lastHUDUpdate = Date.distantPast
+        let fm = FileManager.default
+
+        func emitProgress(force: Bool = false) {
+            let now = Date()
+            guard force || now.timeIntervalSince(lastHUDUpdate) >= 0.08 else { return }
+            lastHUDUpdate = now
+            let done = perFileBytes.reduce(Int64(0), +)
+            let elapsed = max(0.05, now.timeIntervalSince(start))
+            onProgress(done, totalExpected, Double(done) / elapsed)
+        }
+
+        func pump() {
+            while active < maxConcurrent && nextIndex < files.count {
+                let idx = nextIndex
+                nextIndex += 1
+                active += 1
+                let file = files[idx]
+                if let cached = cachedTransferredFiles[file.id],
+                   let attrs = try? fm.attributesOfItem(atPath: cached.path),
+                   (attrs[.size] as? NSNumber)?.int64Value == file.size {
+                    let destination = FileTransfer.uniqueDestination(in: directory, name: cached.lastPathComponent)
+                    if (try? fm.copyItem(at: cached, to: destination)) != nil {
+                        perFileBytes[idx] = file.size
+                        results[idx] = destination
+                        cachedTransferredFiles[file.id] = destination
+                        active -= 1
+                        emitProgress(force: true)
+                        continue
+                    }
+                }
+                transfer.download(file: file, into: directory, onProgress: { written, _ in
+                    perFileBytes[idx] = min(max(0, file.size), written)
+                    emitProgress()
+                }) { result in
+                    switch result {
+                    case .success(let url):
+                        perFileBytes[idx] = max(0, file.size)
+                        results[idx] = url
+                        self.cachedTransferredFiles[file.id] = url
+                    case .failure(let error):
+                        if firstError == nil { firstError = error }
+                    }
+                    active -= 1
+                    emitProgress(force: true)
+                    if active == 0 && nextIndex >= files.count {
+                        completion(results.compactMap { $0 }, firstError)
+                    } else {
+                        pump()
+                    }
+                }
+            }
+            if active == 0 && nextIndex >= files.count {
+                completion(results.compactMap { $0 }, firstError)
+            }
+        }
+        pump()
+    }
+
+    private func filterRegularFiles(_ urls: [URL], maxBytes: Int64 = 512 * 1024 * 1024,
+                                    limit: Int = 20) -> [(url: URL, size: Int64, mtime: TimeInterval)] {
+        let fm = FileManager.default
+        var valid: [(url: URL, size: Int64, mtime: TimeInterval)] = []
+        for rawURL in urls.prefix(limit) {
+            let url = (rawURL as NSURL).filePathURL ?? rawURL
+            guard url.isFileURL,
+                  let attrs = try? fm.attributesOfItem(atPath: url.path),
+                  (attrs[.type] as? FileAttributeType) == .typeRegular,
+                  let size = (attrs[.size] as? NSNumber)?.int64Value,
+                  size >= 0, size <= maxBytes else { continue }
+            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            valid.append((url, size, mtime))
+        }
+        return valid
+    }
+
+    func sendFilesToWindows(_ urls: [URL], destination: String?, setClipboard: Bool = true,
+                            silent: Bool = false, cleanupDir: URL? = nil) {
+        guard linked, receiverSupportsFiles, let transfer = fileTransfer else {
+            if let cleanupDir { try? FileManager.default.removeItem(at: cleanupDir) }
+            return
+        }
+        let items = filterRegularFiles(urls)
+        guard items.count == urls.prefix(20).count, !items.isEmpty else {
+            if let cleanupDir { try? FileManager.default.removeItem(at: cleanupDir) }
+            if !silent {
+                fileDropBar.showStatus("Можно отправлять только файлы и папки до 512 МБ",
+                                       on: builtInScreen(), duration: 2.8)
+            }
+            return
+        }
+        let dest = destination ?? "downloads"
+        let batchID = UUID().uuidString
+        let label = items.count == 1 ? items[0].url.lastPathComponent : "\(items.count) файлов"
+        if !silent {
+            fileDropBar.showProgress("Отправляем на Windows: \(label)…", fraction: 0.03, on: builtInScreen())
+        }
+        uploadBatch(items, using: transfer, destination: dest,
+                    setClipboard: setClipboard, batchID: batchID, onProgress: { [weak self] done, total, speed in
+            guard let self, !silent else { return }
+            let pct = Int((Double(done) / Double(max(1, total)) * 100.0).rounded())
+            let speedStr = FileTransfer.formatSpeed(speed)
+            let suffix = speedStr.isEmpty ? "\(pct) %" : "\(pct) % · \(speedStr)"
+            self.fileDropBar.showProgress("Отправляем: \(label) · \(suffix)",
+                                          fraction: Double(done) / Double(max(1, total)),
+                                          on: self.builtInScreen())
+        }) { [weak self] uploaded, firstError in
+            if let cleanupDir { try? FileManager.default.removeItem(at: cleanupDir) }
+            guard let self else { return }
+            if !uploaded.isEmpty {
+                self.log.record("uploaded \(uploaded.count) file(s) dest=\(dest)")
+                if !silent {
+                    let text = uploaded.count == 1
+                        ? "✓ Отправлено на Windows в «Загрузки»: \(uploaded[0])"
+                        : "✓ Отправлено на Windows в «Загрузки»: \(uploaded.count) файлов"
+                    self.fileDropBar.showStatus(text, on: self.builtInScreen(), duration: 4.0)
+                }
+            } else if let firstError {
+                self.log.record("file upload failed: \(firstError.localizedDescription)")
+                if !silent {
+                    self.fileDropBar.showStatus("Ошибка отправки: \(firstError.localizedDescription)",
+                                                on: self.builtInScreen(), duration: 3.5)
+                }
+            }
+        }
+    }
+
+    private func uploadBatch(_ items: [(url: URL, size: Int64, mtime: TimeInterval)], using transfer: FileTransfer,
+                             destination: String, setClipboard: Bool, batchID: String,
+                             onProgress: @escaping (Int64, Int64, Double) -> Void,
+                             completion: @escaping ([String], Error?) -> Void) {
+        let totalExpected = max(Int64(1), items.reduce(Int64(0)) { $0 + max(0, $1.size) })
+        let start = Date()
+        var perFileBytes = [Int64](repeating: 0, count: items.count)
+        var uploadedNames = [String?](repeating: nil, count: items.count)
+        var firstError: Error?
+        var nextIndex = 0
+        var active = 0
+        let maxConcurrent = min(3, items.count)
+        var lastHUDUpdate = Date.distantPast
+
+        func emitProgress(force: Bool = false) {
+            let now = Date()
+            guard force || now.timeIntervalSince(lastHUDUpdate) >= 0.08 else { return }
+            lastHUDUpdate = now
+            let done = perFileBytes.reduce(Int64(0), +)
+            let elapsed = max(0.05, now.timeIntervalSince(start))
+            onProgress(done, totalExpected, Double(done) / elapsed)
+        }
+
+        func pump() {
+            while active < maxConcurrent && nextIndex < items.count {
+                let idx = nextIndex
+                nextIndex += 1
+                active += 1
+                let item = items[idx]
+                transfer.upload(fileURL: item.url, destination: destination,
+                                setClipboard: setClipboard, batchID: batchID, onProgress: { sent, _ in
+                    perFileBytes[idx] = min(max(0, item.size), sent)
+                    emitProgress()
+                }) { result in
+                    switch result {
+                    case .success(let savedName):
+                        perFileBytes[idx] = max(0, item.size)
+                        uploadedNames[idx] = savedName
+                    case .failure(let error):
+                        if firstError == nil { firstError = error }
+                    }
+                    active -= 1
+                    emitProgress(force: true)
+                    if active == 0 && nextIndex >= items.count {
+                        completion(uploadedNames.compactMap { $0 }, firstError)
+                    } else {
+                        pump()
+                    }
+                }
+            }
+        }
+        pump()
+    }
+
+    private func receivedClipboardCacheDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/Prilo/Received", isDirectory: true)
+    }
+
+    private func pruneOldReceivedFiles(in directory: URL) {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+                                                         options: [.skipsHiddenFiles]) else { return }
+        let cutoff = Date().addingTimeInterval(-3600)
+        for item in contents {
+            if let values = try? item.resourceValues(forKeys: [.contentModificationDateKey]),
+               let modified = values.contentModificationDate, modified < cutoff {
+                try? fm.removeItem(at: item)
+            }
+        }
+    }
+
+    func handleRemoteFileOffer(_ files: [OfferedFile]) {
+        offerGeneration &+= 1
+        let generation = offerGeneration
+        offeredWindowsFiles = files
+        refreshFileMenuItems()
+        guard controlSettings.clipboardSync, controlSettings.clipboardFileSync,
+              receiverSupportsFiles, let transfer = fileTransfer else { return }
+        let total = files.reduce(Int64(0)) { $0 + $1.size }
+        guard total > 0 else { return }
+        // Only auto-prefetch tiny clipboard files (<= 2 MB) while cursor is on Mac so Wi-Fi stays free.
+        guard !remote, total <= 2 * 1024 * 1024 else {
+            if let first = files.first, total > 2 * 1024 * 1024 {
+                fileDropBar.showStatus("С Windows доступен файл \(first.name) (\(FileTransfer.formatBytes(total))) — скачайте из меню",
+                                       on: builtInScreen(), duration: 3.0)
+            }
+            return
+        }
+        let cacheDir = receivedClipboardCacheDirectory()
+        pruneOldReceivedFiles(in: cacheDir)
+        downloadBatch(files, using: transfer, into: cacheDir, onProgress: { _, _, _ in }) { [weak self] saved, _ in
+            guard let self, self.linked, self.offerGeneration == generation, !saved.isEmpty else { return }
+            let items = self.filterRegularFiles(saved, maxBytes: 25 * 1024 * 1024)
+            let meta = items.map { "\($0.url.path)|\($0.size)|\($0.mtime)" }.sorted().joined(separator: "\n")
+            self.lastSyncedClipboardHash = self.clipboardHash(kind: "files", payload: Data(meta.utf8))
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects(saved as [NSURL])
+            self.lastClipboardChangeCount = pb.changeCount
+            self.log.record("synced \(saved.count) file(s) from Windows clipboard")
+        }
+    }
+
+    func handleRemoteFileDrop(_ files: [OfferedFile]) {
+        offerGeneration &+= 1
+        offeredWindowsFiles = files
+        refreshFileMenuItems()
+        guard receiverSupportsFiles, let transfer = fileTransfer else { return }
+        let fm = FileManager.default
+        let targetDir = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+        transferBatchFromWindows(files, using: transfer, into: targetDir, logPrefix: "received", writeClipboard: true)
+    }
+
+    private func transferBatchFromWindows(_ files: [OfferedFile], using transfer: FileTransfer, into targetDir: URL,
+                                          logPrefix: String, writeClipboard: Bool = false) {
+        let label = files.count == 1 ? files[0].name : "\(files.count) файлов"
+        fileDropBar.showProgress("Получаем с Windows: \(label)…", fraction: 0.03, on: builtInScreen())
+        downloadBatch(files, using: transfer, into: targetDir, onProgress: { [weak self] done, total, speed in
+            guard let self else { return }
+            let pct = Int((Double(done) / Double(max(1, total)) * 100.0).rounded())
+            let speedStr = FileTransfer.formatSpeed(speed)
+            let suffix = speedStr.isEmpty ? "\(pct) %" : "\(pct) % · \(speedStr)"
+            self.fileDropBar.showProgress("Получаем: \(label) · \(suffix)",
+                                          fraction: Double(done) / Double(max(1, total)),
+                                          on: self.builtInScreen())
+        }) { [weak self] saved, firstError in
+            guard let self else { return }
+            if !saved.isEmpty {
+                if writeClipboard {
+                    let items = self.filterRegularFiles(saved, maxBytes: 25 * 1024 * 1024)
+                    if !items.isEmpty {
+                        let meta = items.map { "\($0.url.path)|\($0.size)|\($0.mtime)" }.sorted().joined(separator: "\n")
+                        self.lastSyncedClipboardHash = self.clipboardHash(kind: "files", payload: Data(meta.utf8))
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.writeObjects(saved as [NSURL])
+                        self.lastClipboardChangeCount = pb.changeCount
+                    }
+                }
+                self.lastReceivedFiles = saved
+                self.showLastReceivedItem.title = saved.count == 1
+                    ? "Показать в Finder: \(saved[0].lastPathComponent)"
+                    : "Показать в Finder (\(saved.count) файлов)"
+                self.showLastReceivedItem.isHidden = false
+                let text = saved.count == 1
+                    ? "✓ В «Загрузки»: \(saved[0].lastPathComponent) · Показать"
+                    : "✓ В «Загрузки»: \(saved.count) файлов · Показать"
+                self.fileDropBar.showStatus(text, on: self.builtInScreen(), duration: 6.0, revealURLs: saved)
+                self.log.record("\(logPrefix) \(saved.count) file(s) from Windows")
+            } else if let firstError {
+                self.fileDropBar.showStatus("Ошибка получения файла: \(firstError.localizedDescription)",
+                                            on: self.builtInScreen(), duration: 3.5)
+            }
+        }
     }
 
     func updateControlStatus() {
@@ -632,11 +1238,132 @@ final class Prilo: NSObject, NSApplicationDelegate {
             if let reconnect, controlSettings.autoConnect { beginConnection(reconnect) }
         }
         channel?.heartbeat(now: now, capturing: remote)
-        if now.timeIntervalSince(lastInputCheck) >= 1 {
+        if remote, (!NSApp.isActive || !cursorHidden || !cursorDetached), now.timeIntervalSince(lastActivateAttempt) >= 0.15 {
+            lastActivateAttempt = now
+            if !NSApp.isActive {
+                showCaptureAnchor()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            if !cursorDetached || !NSApp.isActive {
+                reinforceRemoteCursor()
+            } else {
+                updateRemoteCursor()
+            }
+        }
+        if remote, !secureInputWarned, IsSecureEventInputEnabled() {
+            warnSecureInput()
+        }
+        if !remote, now.timeIntervalSince(lastInputCheck) >= ((window.isVisible || !ready) ? 1.0 : 5.0) {
             lastInputCheck = now
             if window.isVisible || linked { refreshPermissions() }
+            syncAwakeIfNeeded()
+        }
+        if linked, !remote, now.timeIntervalSince(lastClipboardCheck) >= 0.25 {
+            lastClipboardCheck = now
+            syncLocalClipboardIfNeeded()
         }
         flush()
+    }
+
+    func syncLocalClipboardIfNeeded() {
+        guard linked, controlSettings.clipboardSync, let channel, channel.ready else { return }
+        let pb = NSPasteboard.general
+        let count = pb.changeCount
+        guard count != lastClipboardChangeCount else { return }
+        lastClipboardChangeCount = count
+
+        if receiverSupportsFiles && controlSettings.clipboardFileSync,
+           let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            let fileURLs = urls.compactMap { ($0 as NSURL).filePathURL ?? ($0.isFileURL ? $0 : nil) }
+            let valid = filterRegularFiles(fileURLs, maxBytes: 25 * 1024 * 1024)
+            let totalSize = valid.reduce(Int64(0)) { $0 + $1.size }
+            guard valid.count == fileURLs.prefix(20).count, !valid.isEmpty, totalSize <= 25 * 1024 * 1024 else {
+                lastSyncedClipboardHash = nil
+                return
+            }
+            let meta = valid.map { "\($0.url.path)|\($0.size)|\($0.mtime)" }.sorted().joined(separator: "\n")
+            let digest = clipboardHash(kind: "files", payload: Data(meta.utf8))
+            guard digest != lastSyncedClipboardHash else { return }
+            lastSyncedClipboardHash = digest
+            sendFilesToWindows(valid.map(\.url), destination: "clipboard", setClipboard: true, silent: true)
+            let label = valid.count == 1 ? valid[0].url.lastPathComponent : "\(valid.count) файлов"
+            fileDropBar.showStatus("✓ В буфер Windows: \(label)", on: builtInScreen(), duration: 1.8)
+            return
+        }
+
+        if let raw = pb.string(forType: .string) {
+            let normalized = normalizeClipboardText(raw)
+            guard !normalized.isEmpty, normalized.utf8.count <= maxClipboardBytes else { return }
+            let digest = clipboardHash(kind: "text", payload: Data(normalized.utf8))
+            guard digest != lastSyncedClipboardHash else { return }
+            lastSyncedClipboardHash = digest
+            channel.sendClipboard(normalized)
+            return
+        }
+
+        let rawPNG = pb.data(forType: .png)
+        let rawTIFF = rawPNG == nil ? pb.data(forType: .tiff) : nil
+        guard rawPNG != nil || rawTIFF != nil else {
+            lastSyncedClipboardHash = nil
+            return
+        }
+        clipboardQueue.async { [weak self, weak channel] in
+            guard let self else { return }
+            let pngData: Data?
+            if let rawPNG {
+                pngData = rawPNG
+            } else if let rawTIFF, let rep = NSBitmapImageRep(data: rawTIFF) {
+                pngData = rep.representation(using: .png, properties: [:])
+            } else {
+                pngData = nil
+            }
+            guard let pngData, !pngData.isEmpty, pngData.count <= maxClipboardImageBytes else {
+                DispatchQueue.main.async { self.lastSyncedClipboardHash = nil }
+                return
+            }
+            let digest = self.clipboardHash(kind: "image", payload: pngData)
+            DispatchQueue.main.async {
+                guard let channel, channel.ready, self.channel === channel,
+                      digest != self.lastSyncedClipboardHash else { return }
+                self.lastSyncedClipboardHash = digest
+                channel.sendClipboardImage(pngData)
+            }
+        }
+    }
+
+    func applyRemoteClipboard(_ text: String) {
+        guard controlSettings.clipboardSync else { return }
+        let normalized = normalizeClipboardText(text)
+        guard !normalized.isEmpty, normalized.utf8.count <= maxClipboardBytes else { return }
+        lastSyncedClipboardHash = clipboardHash(kind: "text", payload: Data(normalized.utf8))
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(normalized, forType: .string)
+        lastClipboardChangeCount = pb.changeCount
+    }
+
+    func applyRemoteClipboardImage(_ base64: String) {
+        guard controlSettings.clipboardSync,
+              let pngData = Data(base64Encoded: base64),
+              !pngData.isEmpty, pngData.count <= maxClipboardImageBytes,
+              let image = NSImage(data: pngData) else { return }
+        lastSyncedClipboardHash = clipboardHash(kind: "image", payload: pngData)
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setData(pngData, forType: .png)
+        if let tiff = image.tiffRepresentation {
+            pb.setData(tiff, forType: .tiff)
+        }
+        lastClipboardChangeCount = pb.changeCount
+    }
+
+    private func clipboardHash(kind: String, payload: Data) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: Data(kind.utf8))
+        hasher.update(data: Data([0]))
+        hasher.update(data: payload)
+        return Data(hasher.finalize())
     }
 
     func installTap() -> Bool {
@@ -644,18 +1371,40 @@ final class Prilo: NSObject, NSApplicationDelegate {
         let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
                                     .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
                                     .otherMouseDown, .otherMouseUp, .scrollWheel, .keyDown, .keyUp, .flagsChanged]
-        let mask = types.reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
-        guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
-                                           options: .defaultTap, eventsOfInterest: mask,
-                                           callback: { _, type, event, context in
+        let baseMask = types.reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
-            return Unmanaged<Prilo>.fromOpaque(context).takeUnretainedValue().handle(type, event)
-        }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return false }
+            return Unmanaged<PriloApp>.fromOpaque(context).takeUnretainedValue().handle(type, event)
+        }
+        guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                           options: .defaultTap, eventsOfInterest: baseMask,
+                                           callback: callback, userInfo: userInfo) else {
+            return false
+        }
         let source = CFMachPortCreateRunLoopSource(nil, port, 0)
         tap = port
         tapSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
+
+        let gestureMask = Self.gestureEventTypes.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << UInt64($1)) }
+        var gestureMode = "session-only"
+        for (location, mode) in [(CGEventTapLocation.cghidEventTap, "session+hid-gestures"),
+                                 (CGEventTapLocation.cgSessionEventTap, "session+session-gestures")] {
+            if let gPort = CGEvent.tapCreate(tap: location, place: .headInsertEventTap,
+                                             options: .defaultTap, eventsOfInterest: gestureMask,
+                                             callback: callback, userInfo: userInfo) {
+                let gSource = CFMachPortCreateRunLoopSource(nil, gPort, 0)
+                gestureTap = gPort
+                gestureTapSource = gSource
+                CFRunLoopAddSource(CFRunLoopGetMain(), gSource, .commonModes)
+                CGEvent.tapEnable(tap: gPort, enable: true)
+                gestureMode = mode
+                break
+            }
+        }
+        log.record("input tap mode=\(gestureMode)")
         return true
     }
 
@@ -664,22 +1413,41 @@ final class Prilo: NSObject, NSApplicationDelegate {
         if let tap { CFMachPortInvalidate(tap) }
         tap = nil
         tapSource = nil
+        if let source = gestureTapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        if let gestureTap { CFMachPortInvalidate(gestureTap) }
+        gestureTap = nil
+        gestureTapSource = nil
     }
 
     func stop() {
         leave(reason: "disconnect")
         channel?.close()
         channel = nil
+        fileTransfer?.invalidate()
+        fileTransfer = nil
         connection = nil
         linked = false
         paused = false
         ready = false
         sending = false
-        edgePush = 0
+        receiverSupportsShortcuts = false
+        receiverSupportsFiles = false
+        offeredWindowsFiles.removeAll()
+        cachedTransferredFiles.removeAll()
+        suppressedShortcutKeys.removeAll()
+        fileDropBar.hide()
+        if let act = latencyActivity {
+            ProcessInfo.processInfo.endActivity(act)
+            latencyActivity = nil
+        }
+        topEdgePush.reset()
+        pinchDetector.reset()
+        lastSentAwake = nil
         pending.removeAll()
         localButtons.removeAll()
         localKeys.removeAll()
         removeTap()
+        refreshFileMenuItems()
     }
 
     func stopAndRelease() {
@@ -734,11 +1502,16 @@ final class Prilo: NSObject, NSApplicationDelegate {
     func leave(reason: String) {
         guard remote else { return }
         remote = false
-        edgePush = 0
+        topEdgePush.reset()
+        swipeDetector.reset()
+        pinchDetector.reset()
+        suppressedShortcutKeys.removeAll()
         if handoffConfirmed && controlSettings.animate { cue.show(at: entry, entering: false) }
         handoffConfirmed = false
         pending = [Input(kind: "release")]
-        if cursorDetached { CGAssociateMouseAndMouseCursorPosition(1) }
+        flushIfIdle()
+        captureAnchor?.orderOut(nil)
+        CGAssociateMouseAndMouseCursorPosition(1)
         if cursorHidden { CGDisplayShowCursor(CGMainDisplayID()) }
         cursorDetached = false
         cursorHidden = false
@@ -747,7 +1520,7 @@ final class Prilo: NSObject, NSApplicationDelegate {
         previousApp = nil
         log.record("control returned to Mac reason=\(reason)")
         if channel != nil {
-            log.record("stream capture frames=\(captureFrames) peakQueue=\(capturePeakQueue) peakWriteUs=\(capturePeakWrite / 1000)")
+            log.record("stream capture frames=\(captureFrames) keys=\(captureKeyEvents) peakQueue=\(capturePeakQueue) peakWriteUs=\(capturePeakWrite / 1000)")
         }
         updateControlStatus()
     }
@@ -757,16 +1530,77 @@ final class Prilo: NSObject, NSApplicationDelegate {
         updateRemoteCursor()
     }
 
-    func updateRemoteCursor() {
-        guard remote, NSApp.isActive else { return }
-        if !cursorHidden { cursorHidden = CGDisplayHideCursor(CGMainDisplayID()) == .success }
-        if !cursorDetached {
-            cursorDetached = CGAssociateMouseAndMouseCursorPosition(0) == .success
+    func applicationDidResignActive(_ notification: Notification) {
+        guard remote else { return }
+        cursorDetached = false
+        reinforceRemoteCursor()
+    }
+
+    func enableBackgroundCursorControl() -> Bool {
+        typealias DefaultConnFn = @convention(c) () -> Int32
+        typealias SetPropFn = @convention(c) (Int32, Int32, CFString, CFTypeRef) -> CGError
+        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+        guard let connSym = dlsym(rtldDefault, "_CGSDefaultConnection"),
+              let propSym = dlsym(rtldDefault, "CGSSetConnectionProperty") else {
+            return false
+        }
+        let cid = unsafeBitCast(connSym, to: DefaultConnFn.self)()
+        let setProp = unsafeBitCast(propSym, to: SetPropFn.self)
+        return setProp(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue) == .success
+    }
+
+    func warnSecureInput() {
+        guard !secureInputWarned else { return }
+        secureInputWarned = true
+        log.record("warning: macOS Secure Event Input is active — keyboard events blocked")
+        fileDropBar.showStatus("⚠ macOS блокирует клавиатуру (активно поле пароля или Secure Input)",
+                               on: builtInScreen(), duration: 5.5)
+    }
+
+    func showCaptureAnchor() {
+        if captureAnchor == nil {
+            let panel = CaptureKeyPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+                                        styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.alphaValue = 0.01
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            captureAnchor = panel
+        }
+        if let main = NSScreen.screens.first {
+            let origin = NSPoint(x: capturedBounds.midX, y: main.frame.maxY - capturedBounds.midY)
+            captureAnchor?.setFrameOrigin(origin)
+        }
+        captureAnchor?.makeKeyAndOrderFront(nil)
+    }
+
+    func reinforceRemoteCursor() {
+        guard remote else { return }
+        cursorDetached = CGAssociateMouseAndMouseCursorPosition(0) == .success
+        if cursorHidden {
+            CGDisplayShowCursor(CGMainDisplayID())
+            cursorHidden = false
+        }
+        if backgroundCursorEnabled || NSApp.isActive {
+            cursorHidden = CGDisplayHideCursor(CGMainDisplayID()) == .success
         }
     }
 
+    func updateRemoteCursor() {
+        guard remote else { return }
+        if !cursorDetached {
+            cursorDetached = CGAssociateMouseAndMouseCursorPosition(0) == .success
+        }
+        guard backgroundCursorEnabled || NSApp.isActive else { return }
+        if !cursorHidden { cursorHidden = CGDisplayHideCursor(CGMainDisplayID()) == .success }
+    }
+
     func warpForCapture() {
-        CGWarpMouseCursorPosition(CGPoint(x: capturedBounds.midX, y: capturedBounds.midY))
+        CGWarpMouseCursorPosition(CGPoint(x: floor(capturedBounds.midX), y: floor(capturedBounds.midY)))
         lastWarp = Date()
     }
 
@@ -781,9 +1615,32 @@ final class Prilo: NSObject, NSApplicationDelegate {
         }
     }
 
+    func enqueueScroll(x: Double, y: Double, continuous: Bool) {
+        let delta = scrollMotion.scale(x: x, y: y, continuous: continuous)
+        guard delta.x != 0 || delta.y != 0 else { return }
+        if let last = pending.indices.last, pending[last].kind == "scroll" {
+            pending[last].x = min(10000, max(-10000, pending[last].x + delta.x))
+            pending[last].y = min(10000, max(-10000, pending[last].y + delta.y))
+        } else {
+            pending.append(Input(kind: "scroll", x: delta.x, y: delta.y))
+        }
+    }
+
+    func flushIfIdle() {
+        if !pending.isEmpty && !sending {
+            flush()
+        }
+    }
+
+    func flushMotionIfDue() {
+        if !pending.isEmpty && !sending && Date().timeIntervalSince(lastSend) >= 0.006 {
+            flush()
+        }
+    }
+
     func flush() {
         guard let connection, linked, !sending,
-              !pending.isEmpty || Date().timeIntervalSince(lastSend) > (remote ? 0.4 : 5) else { return }
+              !pending.isEmpty || Date().timeIntervalSince(lastSend) > (remote ? 0.5 : 5) else { return }
         if remote { capturePeakQueue = max(capturePeakQueue, pending.count) }
         let batch = Array(pending.prefix(128))
         pending.removeFirst(batch.count)
@@ -799,6 +1656,9 @@ final class Prilo: NSObject, NSApplicationDelegate {
                     self.capturePeakWrite = max(self.capturePeakWrite, DispatchTime.now().uptimeNanoseconds - writeStart)
                 }
                 self.sending = false
+                if !self.pending.isEmpty {
+                    self.flush()
+                }
             }
             return
         }
@@ -827,6 +1687,7 @@ final class Prilo: NSObject, NSApplicationDelegate {
             localKeys.removeAll()
             localButtons.removeAll()
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let gestureTap { CGEvent.tapEnable(tap: gestureTap, enable: true) }
             return original
         }
         let key = event.getIntegerValueField(.keyboardEventKeycode)
@@ -834,63 +1695,153 @@ final class Prilo: NSObject, NSApplicationDelegate {
         let dy = Int32(clamping: event.getIntegerValueField(.mouseEventDeltaY))
         let button = UInt16(clamping: event.getIntegerValueField(.mouseEventButtonNumber))
         if !remote {
+            if Self.gestureEventTypes.contains(type.rawValue) { return original }
             switch type {
-            case .leftMouseDown, .rightMouseDown, .otherMouseDown: localButtons.insert(button)
-            case .leftMouseUp, .rightMouseUp, .otherMouseUp: localButtons.remove(button)
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                localButtons.insert(button)
+            case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+                localButtons.remove(button)
             case .keyDown: localKeys.insert(key)
             case .keyUp: localKeys.remove(key)
             default: break
             }
             guard type == .mouseMoved else { return original }
             let heldModifiers: CGEventFlags = [.maskShift, .maskControl, .maskAlternate, .maskCommand]
-            guard ready, pending.isEmpty, dy < 0, localButtons.isEmpty, localKeys.isEmpty,
+            guard ready, pending.isEmpty, localButtons.isEmpty, localKeys.isEmpty,
                   event.flags.intersection(heldModifiers).isEmpty else {
-                edgePush = 0
+                topEdgePush.reset()
                 return original
             }
             let bounds = CGDisplayBounds(CGGetOnlineBuiltInDisplay())
-            guard bounds.width > 0, event.location.y >= bounds.minY - 1, event.location.y <= bounds.minY + 1,
-                  event.location.x >= bounds.minX, event.location.x < bounds.maxX else {
-                edgePush = 0
+            let atTopEdge = bounds.width > 0 && event.location.y >= bounds.minY - 1 && event.location.y <= bounds.minY + 1 &&
+                            event.location.x >= bounds.minX && event.location.x < bounds.maxX
+            guard topEdgePush.advance(dx: dx, dy: dy, atTopEdge: atTopEdge, now: Date().timeIntervalSinceReferenceDate) else {
                 return original
             }
-            let now = Date()
-            if now.timeIntervalSince(lastEdgePush) > 0.25 { edgePush = 0 }
-            lastEdgePush = now
-            edgePush += max(-100, dy)
-            guard edgePush <= -8 else { return original }
-            edgePush = 0
             remote = true
             captureID &+= 1
             captureFrames = 0
+            captureKeyEvents = 0
+            secureInputWarned = false
             capturePeakQueue = 0
             capturePeakWrite = 0
             handoffConfirmed = false
             capturedBounds = bounds
             pointer = PointerMotion(speed: controlSettings.speed)
-            keyboard = RemoteKeyboard(commandIsControl: controlSettings.commandIsControl)
+            scrollMotion = ScrollMotion(smoothness: controlSettings.scrollSmoothness)
+            swipeDetector.reset()
+            pinchDetector.reset()
+            suppressedShortcutKeys.removeAll()
+            keyboard = RemoteKeyboard(commandIsControl: controlSettings.commandIsControl,
+                                      commandSpaceSwitchesLanguage: controlSettings.commandSpaceSwitchesLanguage,
+                                      macShortcuts: controlSettings.macShortcuts)
             lastWarp = .distantPast
+            lastActivateAttempt = .distantPast
+            lastReinforce = .distantPast
             entry = CGPoint(x: event.location.x, y: bounds.minY)
             let frontmost = NSWorkspace.shared.frontmostApplication
             previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
-            // Keep the setup window from being raised when Prilo takes focus for capture.
+            // Keep the setup window from being raised while providing an invisible activation anchor.
+            showCaptureAnchor()
             window.orderOut(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if IsSecureEventInputEnabled() {
+                warnSecureInput()
+            }
             updateRemoteCursor()
-            if !cursorDetached { warpForCapture() }
+            warpForCapture()
             log.record("control entered Windows")
             updateControlStatus()
+            syncLocalClipboardIfNeeded()
             pending.append(Input(kind: "enter", x: entryPosition(x: entry.x, in: bounds)))
+            flushIfIdle()
             return nil
         }
         if type == .keyDown, key == 53, event.flags.contains([.maskControl, .maskAlternate]) {
             leave(reason: "escape shortcut")
             return nil
         }
+        if type == .keyDown, key == 37, controlSettings.commandLLocksWindows,
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
+           event.flags.contains(.maskCommand),
+           event.flags.intersection([.maskShift, .maskControl, .maskAlternate]).isEmpty {
+            captureKeyEvents += 1
+            lockWindows()
+            return nil
+        }
+        if type == .keyUp, suppressedShortcutKeys.remove(key) != nil {
+            captureKeyEvents += 1
+            return nil
+        }
+        if type == .keyDown, (key == 21 || key == 23), controlSettings.macShortcuts,
+           event.flags.contains([.maskCommand, .maskShift]),
+           event.flags.intersection([.maskControl, .maskAlternate]).isEmpty {
+            captureKeyEvents += 1
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                suppressedShortcutKeys.insert(key)
+                let releases = keyboard.releaseAllModifiers()
+                if !releases.isEmpty { pending.append(contentsOf: releases) }
+                if receiverSupportsShortcuts {
+                    flushIfIdle()
+                    channel?.sendShortcut("snip", capture: captureID)
+                    log.record("shortcut snip")
+                } else {
+                    pending.append(contentsOf: [
+                        Input(kind: "key", code: 0x137, down: true),
+                        Input(kind: "key", code: 0x137, down: false),
+                    ])
+                    flushIfIdle()
+                }
+            }
+            return nil
+        }
         if pending.count >= 512 {
             leave(reason: "input queue full")
             return nil
         }
+        if type.rawValue == 29 {
+            if let nsEvent = NSEvent(cgEvent: event), !nsEvent.touches(matching: .any, in: nil).isEmpty {
+                let touches = nsEvent.touches(matching: .touching, in: nil)
+                let count = touches.count
+                let now = Date().timeIntervalSinceReferenceDate
+                if controlSettings.pinchToZoom && receiverSupportsShortcuts {
+                    let touchPoints = touches.map { (x: Double($0.normalizedPosition.x), y: Double($0.normalizedPosition.y)) }
+                    if let action = pinchDetector.update(touches: touchPoints, now: now) {
+                        channel?.sendShortcut(action, capture: captureID)
+                        log.record("pinch -> \(action)")
+                    }
+                } else {
+                    pinchDetector.reset()
+                }
+                let avgX = count > 0 ? touches.reduce(0.0) { $0 + $1.normalizedPosition.x } / Double(count) : 0
+                let avgY = count > 0 ? touches.reduce(0.0) { $0 + $1.normalizedPosition.y } / Double(count) : 0
+                if let direction = swipeDetector.update(touchCount: count, x: avgX, y: avgY, now: now) {
+                    if receiverSupportsShortcuts {
+                        if let action = swipeShortcutAction(direction: direction,
+                                                            horizontalAction: controlSettings.threeFingerSwipeAction,
+                                                            upEnabled: controlSettings.threeFingerSwipeUp,
+                                                            downEnabled: controlSettings.threeFingerSwipeDown) {
+                            channel?.sendShortcut(action, capture: captureID)
+                            log.record("swipe \(direction) -> \(action)")
+                        }
+                    } else {
+                        let sequence = swipeKeySequence(direction: direction,
+                                                        horizontalAction: controlSettings.threeFingerSwipeAction,
+                                                        upEnabled: controlSettings.threeFingerSwipeUp,
+                                                        downEnabled: controlSettings.threeFingerSwipeDown)
+                        if !sequence.isEmpty {
+                            pending.append(contentsOf: sequence)
+                            flushIfIdle()
+                        }
+                    }
+                }
+            }
+            return nil
+        }
+        if Self.gestureEventTypes.contains(type.rawValue) {
+            return nil
+        }
+        var immediateFlush = false
         switch type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             let recentWarp = Date().timeIntervalSince(lastWarp) < 0.045
@@ -898,22 +1849,50 @@ final class Prilo: NSObject, NSApplicationDelegate {
             if !recentWarp || max(abs(Int64(dx)), abs(Int64(dy))) < 120 {
                 enqueueMotion(x: dx, y: dy)
             }
-            if !cursorDetached && !capturedBounds.insetBy(dx: 24, dy: 24).contains(event.location) && !recentWarp {
+            let centerX = floor(capturedBounds.midX)
+            let centerY = floor(capturedBounds.midY)
+            if !recentWarp && (!cursorDetached || abs(event.location.x - centerX) > 24 || abs(event.location.y - centerY) > 24) {
                 warpForCapture()
+                let now = Date()
+                if !cursorDetached || now.timeIntervalSince(lastReinforce) >= 0.25 {
+                    lastReinforce = now
+                    reinforceRemoteCursor()
+                }
             }
         case .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseUp, .rightMouseUp, .otherMouseUp:
             if button <= 2 {
                 let down = type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown
                 pending.append(Input(kind: "button", code: button, down: down))
+                immediateFlush = true
             }
         case .scrollWheel:
-            let x = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
-            let y = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
-            pending.append(Input(kind: "scroll", x: Int32(clamping: -x * 4), y: Int32(clamping: y * 4)))
+            if pinchDetector.shouldSuppressScroll(now: Date().timeIntervalSinceReferenceDate) {
+                break
+            }
+            let continuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
+            let rawX: Double
+            let rawY: Double
+            if continuous {
+                let ptX = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
+                let ptY = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+                rawX = ptX != 0 ? ptX : event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2) * 10.0
+                rawY = ptY != 0 ? ptY : event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1) * 10.0
+            } else {
+                rawX = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis2))
+                rawY = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1))
+            }
+            enqueueScroll(x: -rawX, y: rawY, continuous: continuous)
         case .keyDown, .keyUp, .flagsChanged:
+            captureKeyEvents += 1
             let down = type == .flagsChanged ? event.flags.rawValue & (modifierMasks[key] ?? 0) != 0 : type == .keyDown
             pending.append(contentsOf: keyboard.events(for: key, down: down, flagsChanged: type == .flagsChanged))
+            immediateFlush = true
         default: break
+        }
+        if immediateFlush {
+            flushIfIdle()
+        } else {
+            flushMotionIfDue()
         }
         return nil
     }
@@ -930,7 +1909,7 @@ func CGGetOnlineBuiltInDisplay() -> CGDirectDisplayID {
 }
 
 let app = NSApplication.shared
-let delegate = Prilo()
+let delegate = PriloApp()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()

@@ -74,6 +74,7 @@ func runTray(app *trayApp) {
 		firewall := systray.AddMenuItem("Разрешить в брандмауэре…", "Открыть порт 43821 для Mac в частной сети")
 		logs := systray.AddMenuItem("Открыть журнал", "")
 		updates := systray.AddMenuItem("Проверить обновления…", "Версия "+version)
+		pipCmd := systray.AddMenuItem("Скопировать команду обновления (cmd)…", "Скопировать pip install --upgrade prilo-receiver")
 		systray.AddSeparator()
 		quit := systray.AddMenuItem("Выйти из Prilo", "Остановить приёмник")
 
@@ -140,6 +141,12 @@ func runTray(app *trayApp) {
 					}()
 				case <-updates.ClickedCh:
 					go update(false)
+				case <-pipCmd.ClickedCh:
+					const cmdText = "python -m pip install --upgrade --no-cache-dir --index-url https://pypi.org/simple prilo-receiver"
+					if err := setClipboardText(cmdText); err != nil {
+						log.Printf("Copy pip command: %v", err)
+					}
+					go showInfo("Команда обновления скопирована в буфер обмена:\n\n" + cmdText + "\n\nОстанови приёмник (Ctrl+C) и вставь её в cmd.")
 				case <-logs.ClickedCh:
 					if err := openPath(logPath()); err != nil {
 						go showError("Журнал пока не создан.")
@@ -153,6 +160,8 @@ func runTray(app *trayApp) {
 		}()
 	}, nil)
 }
+
+var shellExecute = syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteW")
 
 func openPath(path string) error {
 	verb, _ := syscall.UTF16PtrFromString("open")

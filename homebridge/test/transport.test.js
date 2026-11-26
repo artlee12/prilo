@@ -73,7 +73,7 @@ async function receiver(t, credentials) {
   const seen = [];
   const server = https.createServer({ key: credentials.key, cert: credentials.cert }, (req, res) => {
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
-    res.statusCode = req.url === '/power/shutdown' ? 202 : 204;
+    res.statusCode = req.url === '/power/lock' ? 202 : 204;
     res.end();
   });
   try {
@@ -100,7 +100,7 @@ test('request talks to a receiver with the pinned certificate', async t => {
   assert.equal(await request(connection, true), 202);
   assert.deepEqual(seen, [
     { method: 'GET', url: '/power/status', authorization: `Bearer ${connection.token}` },
-    { method: 'POST', url: '/power/shutdown', authorization: `Bearer ${connection.token}` },
+    { method: 'POST', url: '/power/lock', authorization: `Bearer ${connection.token}` },
   ]);
 });
 

@@ -186,7 +186,7 @@ final class UpdateModel: ObservableObject {
         relaunch.arguments = ["-c", "while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"$2\"",
                               "prilo-relaunch", String(ProcessInfo.processInfo.processIdentifier), installed.path]
         try relaunch.run()
-        (NSApp.delegate as? Prilo)?.quitForUpdate()
+        (NSApp.delegate as? PriloApp)?.quitForUpdate()
     }
 }
 

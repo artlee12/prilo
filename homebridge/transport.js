@@ -64,7 +64,7 @@ function pinnedAgent(connection) {
   return agent;
 }
 
-function request(connection, shutdown) {
+function request(connection, lock) {
   return new Promise((resolve, reject) => {
     const agent = pinnedAgent(connection);
     const complete = (error, status) => {
@@ -75,8 +75,8 @@ function request(connection, shutdown) {
     const req = https.request({
       host: connection.host,
       port,
-      path: shutdown ? '/power/shutdown' : '/power/status',
-      method: shutdown ? 'POST' : 'GET',
+      path: lock ? '/power/lock' : '/power/status',
+      method: lock ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${connection.token}` },
       agent,
     }, res => {

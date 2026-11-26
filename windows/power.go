@@ -4,20 +4,16 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 )
 
 type powerController struct {
-	mu       sync.Mutex
-	last     time.Time
-	shutdown func() error
+	mu   sync.Mutex
+	last time.Time
+	lock func() error
 }
 
 func powerToken(inputToken string) string {
@@ -28,6 +24,9 @@ func powerToken(inputToken string) string {
 
 func (p *powerController) register(mux *http.ServeMux, token string) {
 	mux.HandleFunc("/power/status", func(w http.ResponseWriter, req *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if req.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -38,7 +37,10 @@ func (p *powerController) register(mux *http.ServeMux, token string) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/power/shutdown", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/power/lock", func(w http.ResponseWriter, req *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if req.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -49,9 +51,9 @@ func (p *powerController) register(mux *http.ServeMux, token string) {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		if time.Since(p.last) >= 10*time.Second {
-			if err := p.shutdown(); err != nil {
-				log.Printf("Power shutdown request failed: %v", err)
+		if time.Since(p.last) >= 2*time.Second {
+			if err := p.lock(); err != nil {
+				log.Printf("Lock workstation failed: %v", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
@@ -59,12 +61,4 @@ func (p *powerController) register(mux *http.ServeMux, token string) {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
-}
-
-func shutdownWindows() error {
-	root := os.Getenv("SystemRoot")
-	if !filepath.IsAbs(root) {
-		return fmt.Errorf("Windows system directory is unavailable")
-	}
-	return exec.Command(filepath.Join(root, "System32", "shutdown.exe"), "/s", "/t", "0").Run()
 }

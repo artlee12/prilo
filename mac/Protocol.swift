@@ -117,6 +117,14 @@ func powerCode(accessCode: String) -> String {
     return signature.map { String(format: "%02x", $0) }.joined()
 }
 
+let maxClipboardBytes = 512 * 1024
+let maxClipboardImageBytes = 6 * 1024 * 1024
+
+func normalizeClipboardText(_ text: String) -> String {
+    text.replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+}
+
 // MARK: - Updates
 
 /// A dotted release version such as "0.9.1" or "v0.9.1"; missing parts count as zero.
