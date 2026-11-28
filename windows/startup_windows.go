@@ -162,9 +162,9 @@ func startupOption() (bool, error) {
 			return true, err
 		}
 		if enable {
-			showInfo("Prilo Receiver будет запускаться в фоне после входа в этот аккаунт Windows. Значок появится в трее.")
+			showInfo("Fuso Receiver будет запускаться в фоне после входа в этот аккаунт Windows. Значок появится в трее.")
 		} else {
-			showInfo("Автозапуск Prilo Receiver выключен.")
+			showInfo("Автозапуск Fuso Receiver выключен.")
 		}
 		return true, nil
 	default:

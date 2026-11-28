@@ -39,11 +39,11 @@ func checkForUpdate(quiet bool) (string, bool) {
 	if latest.Tag == "" || !found || !newerVersion(version, latest.Tag) {
 		log.Printf("Update check: current %s, latest %q", version, latest.Tag)
 		if !quiet {
-			showInfo(fmt.Sprintf("Установлена последняя версия Prilo Receiver (%s).", version))
+			showInfo(fmt.Sprintf("Установлена последняя версия Fuso Receiver (%s).", version))
 		}
 		return "", false
 	}
-	if !askYesNo(fmt.Sprintf("Доступна новая версия Prilo Receiver: %s (сейчас %s).\n\nСкачать и перезапустить приёмник?", latest.Tag, version)) {
+	if !askYesNo(fmt.Sprintf("Доступна новая версия Fuso Receiver: %s (сейчас %s).\n\nСкачать и перезапустить приёмник?", latest.Tag, version)) {
 		return "", false
 	}
 	path, err := installUpdate(asset)

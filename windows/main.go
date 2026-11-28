@@ -194,10 +194,10 @@ func main() {
 	setDPIAware()
 	cleanupOldExe()
 	service, err := startReceiver(func(err error) {
-		fatal("Приёмник Prilo остановился", err)
+		fatal("Приёмник Fuso остановился", err)
 	})
 	if err != nil {
-		fatal("Не удалось запустить Prilo Receiver", err)
+		fatal("Не удалось запустить Fuso Receiver", err)
 	}
 	defer service.close()
 	runTray(&trayApp{

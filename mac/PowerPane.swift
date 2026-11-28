@@ -99,7 +99,7 @@ final class PowerModel: ObservableObject {
                 guard let self else { return }
                 self.busy = false
                 self.notice = sent ? "Пакет Wake-on-LAN отправлен." :
-                    "Пакет не отправлен. Проверь Broadcast и доступ Prilo к локальной сети."
+                    "Пакет не отправлен. Проверь Broadcast и доступ Fuso к локальной сети."
                 if sent, let secrets, self.profile?.id == profile.id {
                     let until = Date().addingTimeInterval(45)
                     self.wakeWatch = (profile.id, until)
@@ -121,7 +121,7 @@ final class PowerModel: ObservableObject {
                     Diagnostics.shared.record("power wake confirmed")
                 } else if Date() >= until {
                     self.wakeWatch = nil
-                    self.notice = "Приёмник пока не ответил. Проверь, запустился ли ПК и открыт ли Prilo Receiver."
+                    self.notice = "Приёмник пока не ответил. Проверь, запустился ли ПК и открыт ли Fuso Receiver."
                     Diagnostics.shared.record("power wake not confirmed")
                 } else {
                     self.watchForWake(profile, secrets: secrets, until: until)
@@ -146,7 +146,7 @@ final class PowerModel: ObservableObject {
             switch result {
             case .http(202) where lock: self.notice = "Windows заблокирована."
             case .http(204) where !lock: self.notice = "ПК в сети, приёмник отвечает."
-            case .http(404): self.notice = "Обнови приёмник Prilo на Windows."
+            case .http(404): self.notice = "Обнови приёмник Fuso на Windows."
             case .http(401): self.notice = "Код питания не подошёл. Переподключи ПК в Prilo."
             case .http(503): self.notice = "Windows отклонила блокировку. Проверь журнал приёмника."
             default: self.notice = result.unreachableHint ?? "Приёмник ответил неожиданно (\(result.description)). Проверь журнал приёмника."
@@ -169,7 +169,7 @@ final class PowerModel: ObservableObject {
                     : "Happ на Windows получил команду выключить VPN."
             case .http(424): self.vpnNotice = "Happ не установлен на Windows. Установи Happ для Windows и выбери в нём профиль."
             case .http(429): self.vpnNotice = "Подожди секунду и повтори."
-            case .http(404): self.vpnNotice = "Обнови приёмник Prilo на Windows до 0.10.1, чтобы управлять VPN."
+            case .http(404): self.vpnNotice = "Обнови приёмник Fuso на Windows до 0.10.1, чтобы управлять VPN."
             case .http(401): self.vpnNotice = "Код питания не подошёл. Переподключи ПК в Prilo."
             case .http(503): self.vpnNotice = "Windows не смогла передать команду Happ. Проверь журнал приёмника."
             default: self.vpnNotice = result.unreachableHint ?? "Приёмник ответил неожиданно (\(result.description)). Проверь журнал приёмника."
@@ -237,7 +237,7 @@ struct PowerSections: View {
                         Spacer()
                         Button("Сохранить") { model.saveWake() }
                     }
-                    Text("Prilo берёт MAC и Broadcast у приёмника при подключении. Для другого адаптера возьми значения из пункта «Данные для ручного подключения…» в трее Windows. Запуск из полного выключения зависит от BIOS и адаптера.")
+                    Text("Fuso берёт MAC и Broadcast у приёмника при подключении. Для другого адаптера возьми значения из пункта «Данные для ручного подключения…» в трее Windows. Запуск из полного выключения зависит от BIOS и адаптера.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -273,7 +273,7 @@ struct PowerSections: View {
         } header: {
             Text("VPN на Windows")
         } footer: {
-            Text("Команда уходит в Happ на этом ПК и применяется к профилю, выбранному в Happ. Чтобы Prilo не терял связь с ПК, в Happ должен быть включён обход локальной сети.")
+            Text("Команда уходит в Happ на этом ПК и применяется к профилю, выбранному в Happ. Чтобы Fuso не терял связь с ПК, в Happ должен быть включён обход локальной сети.")
                 .foregroundStyle(.secondary)
         }
     }

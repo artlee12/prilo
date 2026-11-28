@@ -45,7 +45,7 @@ func PriloStart() *C.char {
 			hosted.service.close()
 			hosted.service = nil
 		default:
-			return libraryResult("", "Prilo Receiver is already running in this process.")
+			return libraryResult("", "Fuso Receiver is already running in this process.")
 		}
 	}
 	service, err := startReceiver(nil)
@@ -55,7 +55,7 @@ func PriloStart() *C.char {
 	code, ok := service.invite.current(time.Now())
 	if !ok {
 		service.close()
-		return libraryResult("", "Could not create the Prilo pairing code.")
+		return libraryResult("", "Could not create the Fuso pairing code.")
 	}
 	hosted.service = service
 	return (libraryResponse{Code: code, Version: version}).encode()
@@ -66,11 +66,11 @@ func PriloNewPairingCode() *C.char {
 	hosted.Lock()
 	defer hosted.Unlock()
 	if hosted.service == nil {
-		return libraryResult("", "Prilo Receiver is not running.")
+		return libraryResult("", "Fuso Receiver is not running.")
 	}
 	select {
 	case <-hosted.service.done:
-		return libraryResult("", "Prilo Receiver has stopped.")
+		return libraryResult("", "Fuso Receiver has stopped.")
 	default:
 	}
 	code, err := hosted.service.invite.issue()
@@ -85,11 +85,11 @@ func PriloConnectionDetails() *C.char {
 	hosted.Lock()
 	defer hosted.Unlock()
 	if hosted.service == nil {
-		return libraryResult("", "Prilo Receiver is not running.")
+		return libraryResult("", "Fuso Receiver is not running.")
 	}
 	select {
 	case <-hosted.service.done:
-		return libraryResult("", "Prilo Receiver has stopped.")
+		return libraryResult("", "Fuso Receiver has stopped.")
 	default:
 		return (libraryResponse{Details: hosted.service.details()}).encode()
 	}

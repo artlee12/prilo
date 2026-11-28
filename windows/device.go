@@ -102,7 +102,7 @@ type wakeAdapter struct {
 // connectionDetails is the text for manual setup on the Mac. It contains the access code.
 func connectionDetails(token, fingerprint string) string {
 	var b strings.Builder
-	b.WriteString("Данные для ручного подключения в Prilo на Mac.\n\n")
+	b.WriteString("Данные для ручного подключения в Fuso на Mac.\n\n")
 	addresses, _ := net.InterfaceAddrs()
 	for _, address := range addresses {
 		if ip, ok := address.(*net.IPNet); ok && ip.IP.To4() != nil && !ip.IP.IsLoopback() && !ip.IP.IsLinkLocalUnicast() {

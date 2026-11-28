@@ -172,7 +172,7 @@ func startDropBar(onDrop func([]string)) func() {
 		}()
 
 		className, _ := syscall.UTF16PtrFromString("PriloDropBar")
-		winTitle, _ := syscall.UTF16PtrFromString("Prilo Drop")
+		winTitle, _ := syscall.UTF16PtrFromString("Fuso Drop")
 		const (
 			wsExTopmost     = 0x00000008
 			wsExToolWindow  = 0x00000080

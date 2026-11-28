@@ -48,11 +48,11 @@ extension Response {
         guard case .failure(let code) = self else { return nil }
         switch code {
         case .timedOut:
-            return "ПК не ответил на порту 43821. Если Prilo находит ПК в сети, подключение, скорее всего, блокирует брандмауэр Windows: в меню Prilo в трее выбери «Разрешить в брандмауэре…». Иначе проверь, что ПК включён и в той же сети."
+            return "ПК не ответил на порту 43821. Если Fuso находит ПК в сети, подключение, скорее всего, блокирует брандмауэр Windows: в меню Fuso в трее выбери «Разрешить в брандмауэре…». Иначе проверь, что ПК включён и в той же сети."
         case .cannotConnectToHost:
-            return "ПК в сети, но приёмник не принимает подключения. Запусти Prilo Receiver на Windows."
+            return "ПК в сети, но приёмник не принимает подключения. Запусти Fuso Receiver на Windows."
         case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .dnsLookupFailed:
-            return "Нет связи с ПК. Проверь, что Mac и ПК в одной сети и у Prilo есть доступ к локальной сети в настройках macOS."
+            return "Нет связи с ПК. Проверь, что Mac и ПК в одной сети и у Fuso есть доступ к локальной сети в настройках macOS."
         default:
             return nil
         }

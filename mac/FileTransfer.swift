@@ -98,7 +98,7 @@ final class FileTransfer {
         var target = url
         var values = URLResourceValues()
         values.quarantineProperties = [
-            "LSQuarantineAgentName": "Prilo",
+            "LSQuarantineAgentName": "Fuso",
             "LSQuarantineType": "LSQuarantineTypeOtherDownload",
         ]
         do {

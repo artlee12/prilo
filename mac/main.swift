@@ -220,17 +220,17 @@ final class PriloApp: NSObject, NSApplicationDelegate {
         installMainMenu()
         window = ConnectionWindow(owner: self)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let symbol = NSImage(systemSymbolName: "display.2", accessibilityDescription: "Prilo") {
+        if let symbol = NSImage(systemSymbolName: "display.2", accessibilityDescription: "Fuso") {
             symbol.isTemplate = true
             item.button?.image = symbol
         } else {
-            item.button?.title = "Prilo"
+            item.button?.title = "Fuso"
         }
         let menu = NSMenu()
         menu.autoenablesItems = false
         status.isEnabled = false
         menu.addItem(status)
-        menu.addItem(menuItem("Открыть Prilo", action: #selector(showWindow)))
+        menu.addItem(menuItem("Открыть Fuso", action: #selector(showWindow)))
         pauseItem = menuItem("Приостановить управление", action: #selector(togglePause))
         sendFileItem = menuItem("Отправить файл на Windows…", action: #selector(pickAndSendFiles))
         receiveFileItem = menuItem("Сохранить файл с Windows", action: #selector(downloadOfferedFiles))
@@ -248,7 +248,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(updateItem)
         menu.addItem(menuItem("Скопировать журнал", action: #selector(copyDiagnostics)))
-        menu.addItem(menuItem("Выйти из Prilo", action: #selector(quit)))
+        menu.addItem(menuItem("Выйти из Fuso", action: #selector(quit)))
         item.menu = menu
         NSApp.servicesProvider = self
         QuickActionInstaller.installIfNeeded()
@@ -356,7 +356,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
 
     func refreshUpdateItem() {
         let available = window.model.updates.available
-        updateItem.title = available.map { "Установить Prilo \($0.version.description)…" } ?? "Проверить обновления…"
+        updateItem.title = available.map { "Установить Fuso \($0.version.description)…" } ?? "Проверить обновления…"
     }
 
     /// Opens the settings pane, where the update section lives, and checks if nothing is pending.
@@ -379,11 +379,11 @@ final class PriloApp: NSObject, NSApplicationDelegate {
 
     func installMainMenu() {
         let bar = NSMenu()
-        let appMenu = NSMenu(title: "Prilo")
-        appMenu.addItem(menuItem("Открыть Prilo", action: #selector(showWindow), key: ","))
+        let appMenu = NSMenu(title: "Fuso")
+        appMenu.addItem(menuItem("Открыть Fuso", action: #selector(showWindow), key: ","))
         appMenu.addItem(menuItem("Закрыть окно", action: #selector(closeWindow), key: "w"))
         appMenu.addItem(.separator())
-        appMenu.addItem(menuItem("Выйти из Prilo", action: #selector(quit), key: "q"))
+        appMenu.addItem(menuItem("Выйти из Fuso", action: #selector(quit), key: "q"))
         let appEntry = NSMenuItem()
         appEntry.submenu = appMenu
         bar.addItem(appEntry)
@@ -506,7 +506,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
         guard connection == nil, releasing == nil else { return }
         cancelAutomaticConnection()
         guard peer.fingerprint.hasPrefix(code.prefix) else {
-            display(.error("Код не совпадает с выбранным ПК. Проверь имя ПК и код в окне Prilo Receiver."))
+            display(.error("Код не совпадает с выбранным ПК. Проверь имя ПК и код в окне Fuso Receiver."))
             return
         }
         guard let endpoint = URL(string: "https://\(peer.host):43821/pair"),
@@ -537,7 +537,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
                 self.window.fillCredentials(credentials)
                 self.beginConnection(credentials)
             case .http(401):
-                self.display(.error("Код использован, истёк или введён неверно. Возьми новый код в меню Prilo в трее Windows."))
+                self.display(.error("Код использован, истёк или введён неверно. Возьми новый код в меню Fuso в трее Windows."))
             default:
                 self.display(.error(self.connectionMessage(result)))
             }
@@ -670,7 +670,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
                 }
                 retryAt = Date().addingTimeInterval(retryDelay)
                 retryDelay = min(retryDelay * 2, 15)
-                display(.error(connectionMessage(result) + " Prilo попробует подключиться снова."))
+                display(.error(connectionMessage(result) + " Fuso попробует подключиться снова."))
                 return
             }
         default: break
@@ -717,7 +717,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
             return "Не удалось подтвердить сертификат. Сверь отпечаток с пунктом «Данные для ручного подключения…» в трее Windows."
         case .failure(.timedOut), .failure(.cannotConnectToHost), .failure(.notConnectedToInternet),
              .failure(.networkConnectionLost):
-            return result.unreachableHint ?? "Приёмник не ответил. Проверь IP, локальную сеть и доступ Prilo к ней в настройках macOS."
+            return result.unreachableHint ?? "Приёмник не ответил. Проверь IP, локальную сеть и доступ Fuso к ней в настройках macOS."
         default:
             return "Получен неожиданный ответ (\(result.description)). Проверь журнал приёмника в трее Windows и журнал Prilo."
         }

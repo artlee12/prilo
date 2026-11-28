@@ -23,7 +23,7 @@ struct RootView: View {
                     Label(model.nearbyCount == 0 ? "Найти ПК в сети" : "Найти ПК в сети (\(model.nearbyCount))",
                           systemImage: "dot.radiowaves.left.and.right")
                 }
-                .help("Сопряжение с ПК, на котором запущен Prilo Receiver")
+                .help("Сопряжение с ПК, на котором запущен Fuso Receiver")
                 .disabled(!model.editing)
                 Button {
                     model.newPC()
@@ -72,7 +72,7 @@ private struct Sidebar: View {
                     .tag(Pane.newPC)
                     .selectionDisabled(!model.editing)
             }
-            Section("Prilo") {
+            Section("Fuso") {
                 Label("Настройки", systemImage: "gearshape")
                     .badge(model.updates.available == nil ? nil : Text("1"))
                     .tag(Pane.settings)
@@ -200,7 +200,7 @@ private struct ConnectionView: View {
                 Text(saved == nil ? "Новый ПК" : "Подключение")
             } footer: {
                 if saved == nil {
-                    Text("Значения есть в пункте «Данные для ручного подключения…» меню Prilo в трее Windows. Проще выбрать «Найти ПК в сети» и вставить одноразовый код.")
+                    Text("Значения есть в пункте «Данные для ручного подключения…» меню Fuso в трее Windows. Проще выбрать «Найти ПК в сети» и вставить одноразовый код.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -211,7 +211,7 @@ private struct ConnectionView: View {
                               detail: "Нужен для управления мышью и клавиатурой.",
                               granted: model.accessibility) { model.owner?.openPrivacy() }
                 PermissionRow(title: "Мониторинг ввода", symbol: "keyboard",
-                              detail: "Нужен, если Prilo сообщает, что ввод недоступен.",
+                              detail: "Нужен, если Fuso сообщает, что ввод недоступен.",
                               granted: model.monitoring) { model.owner?.openInputMonitoring() }
             } header: {
                 HStack {
@@ -246,7 +246,7 @@ private struct ConnectionView: View {
                             .disabled(!model.editing)
                     }
                     Spacer()
-                    Button("Выйти из Prilo") { model.owner?.quit() }
+                    Button("Выйти из Fuso") { model.owner?.quit() }
                 }
             }
         }
@@ -270,7 +270,7 @@ private struct ConnectionView: View {
                 .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Отмена", role: .cancel) { model.renaming = nil }
         } message: { _ in
-            Text("Имя видно только в Prilo на этом Mac.")
+            Text("Имя видно только в Fuso на этом Mac.")
         }
         .confirmationDialog(model.confirmForget.map { "Забыть «\($0.name)»?" } ?? "",
                             isPresented: Binding(get: { model.confirmForget != nil },
@@ -279,7 +279,7 @@ private struct ConnectionView: View {
             Button("Забыть ПК", role: .destructive) { model.forget(profile) }
             Button("Отмена", role: .cancel) { model.confirmForget = nil }
         } message: { _ in
-            Text("Prilo удалит сохранённые данные для этого ПК. Его можно будет добавить заново.")
+            Text("Fuso удалит сохранённые данные для этого ПК. Его можно будет добавить заново.")
         }
     }
 
@@ -455,7 +455,7 @@ private struct PairingSheet: View {
                     .foregroundStyle(.tint)
                 Text("Сопряжение с Windows")
                     .font(.title2.weight(.semibold))
-                Text("Выбери ПК и вставь код из пункта «Код сопряжения…» в меню Prilo в трее Windows. Если код истёк, выбери там «Новый код сопряжения».")
+                Text("Выбери ПК и вставь код из пункта «Код сопряжения…» в меню Fuso в трее Windows. Если код истёк, выбери там «Новый код сопряжения».")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

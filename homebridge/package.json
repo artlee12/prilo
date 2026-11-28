@@ -1,7 +1,7 @@
 {
   "name": "homebridge-prilo",
   "version": "0.7.0",
-  "description": "Wake and shut down a Windows PC paired with Prilo",
+  "description": "Wake and shut down a Windows PC paired with Fuso (formerly Prilo)",
   "keywords": ["homebridge-plugin", "wake-on-lan"],
   "main": "index.js",
   "scripts": {
