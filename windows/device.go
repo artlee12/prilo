@@ -203,7 +203,7 @@ func deviceInfo(token string) http.HandlerFunc {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		info := map[string]string{"stream": "1", "shortcut": "1", "files": "1"}
+		info := map[string]string{"stream": "1", "shortcut": "1", "files": "1", "sync": "1"}
 		if address, ok := req.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr); ok {
 			for _, adapter := range wakeAdapters() {
 				if adapter.IP == address.IP.String() {

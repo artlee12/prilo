@@ -63,6 +63,8 @@ final class InputChannel {
         session = URLSession(configuration: config, delegate: Pin(connection.fingerprint), delegateQueue: nil)
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(connection.code)", forHTTPHeaderField: "Authorization")
+        // Older receivers ignore this; newer ones only push clipboard and file messages to clients that send it.
+        request.setValue("sync", forHTTPHeaderField: "X-Prilo-Features")
         task = session.webSocketTask(with: request)
         task.maximumMessageSize = 12 * 1024 * 1024
     }

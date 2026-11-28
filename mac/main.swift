@@ -173,6 +173,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
     var fileTransfer: FileTransfer?
     var receiverSupportsShortcuts = false
     var receiverSupportsFiles = false
+    var receiverSupportsSync = false
     var backgroundCursorEnabled = false
     var keyboard = RemoteKeyboard(commandIsControl: true)
     var pointer = PointerMotion(speed: 1)
@@ -332,7 +333,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
     }
 
     func syncAwakeIfNeeded() {
-        guard linked, let channel, channel.ready else { return }
+        guard linked, receiverSupportsSync, let channel, channel.ready else { return }
         let desired = !macLocked && controlSettings.keepWindowsAwake
         guard desired != lastSentAwake else { return }
         lastSentAwake = desired
@@ -565,6 +566,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
                 }
                 self.receiverSupportsShortcuts = capabilities?["shortcut"] == "1"
                 self.receiverSupportsFiles = capabilities?["files"] == "1"
+                self.receiverSupportsSync = capabilities?["sync"] == "1"
                 self.fileTransfer = self.receiverSupportsFiles
                     ? FileTransfer(url: attempt.url, code: credentials.code, fingerprint: credentials.fingerprint)
                     : nil
@@ -1266,7 +1268,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
     }
 
     func syncLocalClipboardIfNeeded() {
-        guard linked, controlSettings.clipboardSync, let channel, channel.ready else { return }
+        guard linked, receiverSupportsSync, controlSettings.clipboardSync, let channel, channel.ready else { return }
         let pb = NSPasteboard.general
         let count = pb.changeCount
         guard count != lastClipboardChangeCount else { return }
@@ -1432,6 +1434,7 @@ final class PriloApp: NSObject, NSApplicationDelegate {
         sending = false
         receiverSupportsShortcuts = false
         receiverSupportsFiles = false
+        receiverSupportsSync = false
         offeredWindowsFiles.removeAll()
         cachedTransferredFiles.removeAll()
         suppressedShortcutKeys.removeAll()

@@ -12,9 +12,20 @@ import (
 const (
 	maxClipboardImageBytes = 6 << 20
 	maxClipboardImageDim   = 8192
+	// 16M pixels covers a 5K screenshot and keeps decode plus DIB memory near 128 MB.
+	maxClipboardImagePixels = 16 << 20
 )
 
 func pngToDIB(pngData []byte) ([]byte, error) {
+	// Check the header first: a small PNG can declare dimensions that need gigabytes to decode.
+	cfg, err := png.DecodeConfig(bytes.NewReader(pngData))
+	if err != nil {
+		return nil, fmt.Errorf("decode png header: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxClipboardImageDim || cfg.Height > maxClipboardImageDim ||
+		int64(cfg.Width)*int64(cfg.Height) > maxClipboardImagePixels {
+		return nil, fmt.Errorf("unsupported image dimensions %dx%d", cfg.Width, cfg.Height)
+	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
 		return nil, fmt.Errorf("decode png: %w", err)

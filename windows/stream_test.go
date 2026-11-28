@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -46,6 +47,7 @@ func (h *streamHarness) dial(token string) (*websocket.Conn, *http.Response, err
 	if token != "" {
 		header.Set("Authorization", "Bearer "+token)
 	}
+	header.Set("X-Prilo-Features", "sync")
 	return websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(h.server.URL, "http"), header)
 }
 
@@ -454,7 +456,7 @@ func TestDeviceInfoAdvertisesCapabilities(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info["stream"] != "1" || info["shortcut"] != "1" || info["files"] != "1" {
+	if info["stream"] != "1" || info["shortcut"] != "1" || info["files"] != "1" || info["sync"] != "1" {
 		t.Fatalf("info = %+v, want stream=1, shortcut=1, files=1", info)
 	}
 }
@@ -503,7 +505,8 @@ func TestFileUploadDeduplicatesSetsClipboardAndDoesNotEcho(t *testing.T) {
 	defer srv.Close()
 
 	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/stream", http.Header{
-		"Authorization": []string{"Bearer " + testToken},
+		"Authorization":    []string{"Bearer " + testToken},
+		"X-Prilo-Features": []string{"sync"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -583,7 +586,8 @@ func TestStreamClipboardFileOfferAndDownload(t *testing.T) {
 	defer srv.Close()
 
 	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/stream", http.Header{
-		"Authorization": []string{"Bearer " + testToken},
+		"Authorization":    []string{"Bearer " + testToken},
+		"X-Prilo-Features": []string{"sync"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -638,7 +642,8 @@ func TestStreamDropBarSendsFileDrop(t *testing.T) {
 	defer srv.Close()
 
 	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/stream", http.Header{
-		"Authorization": []string{"Bearer " + testToken},
+		"Authorization":    []string{"Bearer " + testToken},
+		"X-Prilo-Features": []string{"sync"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -759,5 +764,99 @@ func TestFileStoreRetainsEntriesAndGzipDownload(t *testing.T) {
 	defer respZip.Body.Close()
 	if respZip.Header.Get("Content-Encoding") != "" {
 		t.Fatalf("zip should not be gzipped, got Content-Encoding=%q", respZip.Header.Get("Content-Encoding"))
+	}
+}
+
+func TestStreamSkipsSyncMessagesForLegacyClients(t *testing.T) {
+	resetFake(t)
+	srcDir := t.TempDir()
+	samplePath := filepath.Join(srcDir, "report.pdf")
+	if err := os.WriteFile(samplePath, []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &sync.Mutex{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stream", inputStreamWithBridge(context.Background(), newReceiver(), ctrl, testToken, newClipboardBridge(), newFileStore()))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/stream", http.Header{
+		"Authorization": []string{"Bearer " + testToken},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	var ready streamMessage
+	if err := ws.ReadJSON(&ready); err != nil || ready.Type != "ready" {
+		t.Fatalf("ready = %+v, err=%v", ready, err)
+	}
+	setFakeClipboardFiles([]string{samplePath})
+	triggerFakeDrop([]string{samplePath})
+	var msg streamMessage
+	_ = ws.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+	if err := ws.ReadJSON(&msg); err == nil {
+		t.Fatalf("legacy client got %+v, want no sync messages", msg)
+	}
+}
+
+func TestPNGToDIBRejectsHugeDeclaredDimensions(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+	// Rewrite IHDR to claim 8000x8000 (256 MB RGBA) and fix its CRC; DecodeConfig must reject it before decoding.
+	binary.BigEndian.PutUint32(data[16:20], 8000)
+	binary.BigEndian.PutUint32(data[20:24], 8000)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if _, err := pngToDIB(data); err == nil || !strings.Contains(err.Error(), "dimensions") {
+		t.Fatalf("pngToDIB huge = %v, want dimensions error", err)
+	}
+}
+
+func TestClientFeature(t *testing.T) {
+	for header, want := range map[string]bool{"": false, "sync": true, "foo, sync": true, "syncx": false, "foo": false} {
+		req := httptest.NewRequest("GET", "/stream", nil)
+		if header != "" {
+			req.Header.Set("X-Prilo-Features", header)
+		}
+		if got := clientFeature(req, "sync"); got != want {
+			t.Errorf("clientFeature(%q) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+func TestFinalizeUploadKeepsExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "doc.txt")
+	if err := os.WriteFile(existing, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, ".prilo-upload-1")
+	if err := os.WriteFile(tmp, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, name, err := finalizeUpload(tmp, dir, "doc.txt")
+	if err != nil || name != "doc (2).txt" {
+		t.Fatalf("finalizeUpload = (%q, %q, %v)", path, name, err)
+	}
+	if old, _ := os.ReadFile(existing); string(old) != "old" {
+		t.Fatalf("existing file = %q, want untouched", old)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temp file still present: %v", err)
+	}
+}
+
+func TestSanitizeFilenameDropsFormatCharacters(t *testing.T) {
+	for raw, want := range map[string]string{
+		"invoice‮gpj.exe": "invoice_gpj.exe",
+		"a​b.txt":         "a_b.txt",
+		"CON .txt":        "_CON .txt",
+	} {
+		if got := sanitizeFilename(raw); got != want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }

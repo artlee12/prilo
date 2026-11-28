@@ -22,7 +22,8 @@ final class FileTransfer {
         config.httpMaximumConnectionsPerHost = 3
         config.connectionProxyDictionary = [:]
         config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 300
+        // Large files may take longer than any fixed limit; timeoutIntervalForRequest catches stalls.
+        config.timeoutIntervalForResource = 24 * 60 * 60
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
@@ -90,6 +91,21 @@ final class FileTransfer {
         delegate.registerDownload(taskID: task.taskIdentifier, file: file, directory: directory,
                                   onProgress: onProgress, completion: completion)
         task.resume()
+    }
+
+    /// Gatekeeper then checks a received app or script before it first runs, as with a browser download.
+    static func markQuarantined(_ url: URL) {
+        var target = url
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            "LSQuarantineAgentName": "Prilo",
+            "LSQuarantineType": "LSQuarantineTypeOtherDownload",
+        ]
+        do {
+            try target.setResourceValues(values)
+        } catch {
+            Diagnostics.shared.record("file quarantine failed: \((error as NSError).code)")
+        }
     }
 
     static func uniqueDestination(in directory: URL, name: String) -> URL {
@@ -218,8 +234,18 @@ private final class TransferDelegate: NSObject, URLSessionTaskDelegate, URLSessi
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         lock.lock()
         let entry = downloads[downloadTask.taskIdentifier]
+        let oversized = entry.map { totalBytesWritten > $0.file.size } ?? false
+        if oversized {
+            // The receiver announced this size in the offer; never accept more than that.
+            downloads[downloadTask.taskIdentifier]?.moveError = URLError(.dataLengthExceedsMaximum)
+        }
         lock.unlock()
-        guard let entry, let cb = entry.onProgress else { return }
+        guard let entry else { return }
+        if oversized {
+            downloadTask.cancel()
+            return
+        }
+        guard let cb = entry.onProgress else { return }
         let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : entry.file.size
         DispatchQueue.main.async {
             cb(min(totalBytesWritten, max(total, totalBytesWritten)), total)
@@ -236,11 +262,14 @@ private final class TransferDelegate: NSObject, URLSessionTaskDelegate, URLSessi
         if status == 200 {
             do {
                 let fm = FileManager.default
+                let written = (try location.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
+                guard Int64(written) <= entry.file.size else { throw URLError(.dataLengthExceedsMaximum) }
                 try fm.createDirectory(at: entry.directory, withIntermediateDirectories: true)
                 let rawName = URL(fileURLWithPath: entry.file.name).lastPathComponent
                 let safeName = (rawName.isEmpty || rawName == "." || rawName == "..") ? "file" : rawName
                 let destination = FileTransfer.uniqueDestination(in: entry.directory, name: safeName)
                 try fm.moveItem(at: location, to: destination)
+                FileTransfer.markQuarantined(destination)
                 entry.movedURL = destination
             } catch {
                 entry.moveError = error
@@ -284,7 +313,8 @@ private final class TransferDelegate: NSObject, URLSessionTaskDelegate, URLSessi
 
         if let download {
             if let error {
-                DispatchQueue.main.async { download.completion(.failure(error)) }
+                let reported = download.moveError ?? error
+                DispatchQueue.main.async { download.completion(.failure(reported)) }
                 return
             }
             guard let http = task.response as? HTTPURLResponse else {

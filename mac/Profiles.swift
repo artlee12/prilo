@@ -55,7 +55,7 @@ struct ControlSettings {
         set { defaults.set(newValue, forKey: "scrollSmoothness") }
     }
     var commandLLocksWindows: Bool {
-        get { defaults.object(forKey: "commandLLocksWindows") as? Bool ?? true }
+        get { defaults.object(forKey: "commandLLocksWindows") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "commandLLocksWindows") }
     }
     var keepWindowsAwake: Bool {
@@ -63,7 +63,7 @@ struct ControlSettings {
         set { defaults.set(newValue, forKey: "keepWindowsAwake") }
     }
     var lockWindowsOnMacLock: Bool {
-        get { defaults.object(forKey: "lockWindowsOnMacLock") as? Bool ?? true }
+        get { defaults.object(forKey: "lockWindowsOnMacLock") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "lockWindowsOnMacLock") }
     }
     var threeFingerSwipeAction: ThreeFingerSwipeAction {

@@ -52,6 +52,7 @@ func setDPIAware()                  {}
 func startupOption() (bool, error)  { return false, nil }
 func loadPairing() (pairing, error) { return pairing{}, nil }
 func lockWindows() error            { return nil }
+func shutdownWindows() error        { return nil }
 func showError(string)              {}
 func runTray(*trayApp)              {}
 

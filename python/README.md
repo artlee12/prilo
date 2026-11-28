@@ -1,6 +1,6 @@
 # Prilo Receiver for Python
 
-The Windows receiver for [Prilo on Mac](https://github.com/artlee12/prilo) as a Windows Python package. The native library uses the same Go receiver, encrypted pairing, Bonjour discovery, mouse and keyboard control, power commands, and Happ controls as the standalone release. Install it in an approved interactive Windows user session.
+The Windows receiver for [Prilo on Mac](https://github.com/artlee12/prilo) as a Windows Python package. The native library uses the same Go receiver, encrypted pairing, Bonjour discovery, mouse and keyboard control, clipboard and file sync, and power commands as the standalone release. Install it in an approved interactive Windows user session.
 
 Install from [PyPI](https://pypi.org/project/prilo-receiver/) on Windows with Python 3.9 or newer. Pip selects the x64 or ARM64 wheel based on your Python interpreter's architecture.
 

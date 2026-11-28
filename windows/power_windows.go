@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"syscall"
+	"time"
 )
 
 const (
@@ -28,4 +33,14 @@ func lockWindows() error {
 // pulseKeepAwake resets Windows idle display/system timers without thread-affine ES_CONTINUOUS.
 func pulseKeepAwake() {
 	setThreadExecutionState.Call(esSystemRequired | esDisplayRequired)
+}
+
+func shutdownWindows() error {
+	root := os.Getenv("SystemRoot")
+	if !filepath.IsAbs(root) {
+		return fmt.Errorf("windows system directory is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, filepath.Join(root, "System32", "shutdown.exe"), "/s", "/t", "0").Run()
 }

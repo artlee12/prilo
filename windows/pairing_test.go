@@ -147,7 +147,11 @@ func TestPowerTokenDerivation(t *testing.T) {
 func TestPowerEndpoints(t *testing.T) {
 	calls := 0
 	var failure error
-	power := &powerController{lock: func() error { calls++; return failure }}
+	shutdowns := 0
+	power := &powerController{
+		lock:     func() error { calls++; return failure },
+		shutdown: func() error { shutdowns++; return nil },
+	}
 	token := powerToken(testToken)
 	mux := http.NewServeMux()
 	power.register(mux, token)
@@ -183,6 +187,15 @@ func TestPowerEndpoints(t *testing.T) {
 	}
 	if code := do("POST", "/power/lock", token); code != http.StatusAccepted || calls != 2 {
 		t.Errorf("repeat within 2 s = %d calls=%d, want 202 without a second lock", code, calls)
+	}
+	if code := do("POST", "/power/shutdown", ""); code != http.StatusUnauthorized || shutdowns != 0 {
+		t.Errorf("anonymous shutdown = %d shutdowns=%d, want 401 and no shutdown", code, shutdowns)
+	}
+	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || shutdowns != 1 {
+		t.Errorf("shutdown = %d shutdowns=%d, want 202 and one shutdown", code, shutdowns)
+	}
+	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || shutdowns != 1 {
+		t.Errorf("repeat shutdown = %d shutdowns=%d, want 202 without a second shutdown", code, shutdowns)
 	}
 }
 

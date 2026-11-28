@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,16 @@ func validEvents(events []event) bool {
 		}
 	}
 	return true
+}
+
+// clientFeature reports whether the stream client listed feature in X-Prilo-Features.
+func clientFeature(req *http.Request, feature string) bool {
+	for _, field := range strings.Split(req.Header.Get("X-Prilo-Features"), ",") {
+		if strings.TrimSpace(field) == feature {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *receiver) releaseAll() {
@@ -106,16 +117,22 @@ func inputStreamWithBridge(ctx context.Context, r *receiver, control *sync.Mutex
 		if write(streamMessage{Type: "ready"}) != nil {
 			return
 		}
+		// Macs before 0.10 cap stream messages at 4 KB and drop the link on larger ones,
+		// so clipboard and file messages go only to clients that announce "sync".
+		syncClient := clientFeature(req, "sync")
 		var keepAwake atomic.Bool
 		var activeCapture atomic.Uint64
 		defer activeCapture.Store(0)
-		stopDropBar := startDropBar(func(paths []string) {
-			offered := files.register(paths)
-			if len(offered) > 0 {
-				_ = write(streamMessage{Type: "fileDrop", Files: offered})
-			}
-		})
-		defer stopDropBar()
+		stopDropBar := func() {}
+		if syncClient {
+			stopDropBar = startDropBar(func(paths []string) {
+				offered := files.register(paths)
+				if len(offered) > 0 {
+					_ = write(streamMessage{Type: "fileDrop", Files: offered})
+				}
+			})
+		}
+		defer func() { stopDropBar() }()
 		pushClipCh := make(chan struct{}, 1)
 		layoutCheckCh := make(chan struct{}, 1)
 		applyClipCh := make(chan clipApplyJob, 8)
@@ -132,6 +149,9 @@ func inputStreamWithBridge(ctx context.Context, r *receiver, control *sync.Mutex
 			}
 		}
 		pushClipboard := func() {
+			if !syncClient {
+				return
+			}
 			if item, ok := clip.pollLocal(); ok {
 				switch item.kind {
 				case "text":
@@ -198,19 +218,7 @@ func inputStreamWithBridge(ctx context.Context, r *receiver, control *sync.Mutex
 				case <-streamCtx.Done():
 					return
 				case job := <-applyClipCh:
-					switch job.kind {
-					case "text":
-						if err := clip.applyRemote(job.text); err != nil {
-							log.Printf("clipboard apply: %v", err)
-						}
-					case "image":
-						pngBytes, err := base64.StdEncoding.DecodeString(job.image)
-						if err == nil && len(pngBytes) > 0 && len(pngBytes) <= maxClipboardImageBytes {
-							if err := clip.applyRemoteImage(pngBytes); err != nil {
-								log.Printf("clipboard image apply: %v", err)
-							}
-						}
-					}
+					applyClipJob(clip, job)
 				}
 			}
 		}()
@@ -317,6 +325,28 @@ func inputStreamWithBridge(ctx context.Context, r *receiver, control *sync.Mutex
 					return
 				}
 				triggerLayoutCheck()
+			}
+		}
+	}
+}
+
+// applyClipJob writes a remote clipboard update; a panic in image conversion must not stop the receiver.
+func applyClipJob(clip *clipboardBridge, job clipApplyJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("clipboard apply panic: %v", r)
+		}
+	}()
+	switch job.kind {
+	case "text":
+		if err := clip.applyRemote(job.text); err != nil {
+			log.Printf("clipboard apply: %v", err)
+		}
+	case "image":
+		pngBytes, err := base64.StdEncoding.DecodeString(job.image)
+		if err == nil && len(pngBytes) > 0 && len(pngBytes) <= maxClipboardImageBytes {
+			if err := clip.applyRemoteImage(pngBytes); err != nil {
+				log.Printf("clipboard image apply: %v", err)
 			}
 		}
 	}

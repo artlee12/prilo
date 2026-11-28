@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -197,7 +199,8 @@ func sanitizeFilename(raw string) string {
 	}
 	var b strings.Builder
 	for _, r := range raw {
-		if r < 0x20 || strings.ContainsRune(`<>:"/\|?*`, r) {
+		// Format characters (bidi overrides, zero-width) can disguise "x\u202Egpj.exe" as "xexe.jpg".
+		if r < 0x20 || r == 0x7f || unicode.Is(unicode.Cf, r) || strings.ContainsRune(`<>:"/\|?*`, r) {
 			b.WriteByte('_')
 		} else {
 			b.WriteRune(r)
@@ -212,7 +215,7 @@ func sanitizeFilename(raw string) string {
 	if dot := strings.IndexByte(cleaned, '.'); dot >= 0 {
 		stem = cleaned[:dot]
 	}
-	if windowsReservedNames[strings.ToUpper(stem)] {
+	if windowsReservedNames[strings.ToUpper(strings.TrimRight(stem, " "))] {
 		cleaned = "_" + cleaned
 	}
 	if len(cleaned) > 180 {
@@ -234,6 +237,45 @@ func sanitizeFilename(raw string) string {
 		return "file"
 	}
 	return cleaned
+}
+
+var finalizeUploadMu sync.Mutex
+
+// finalizeUpload gives the upload a free name. os.Link fails when the name exists, unlike os.Rename on
+// Windows, so a file another program creates at the same moment is never replaced.
+func finalizeUpload(tmpPath, dir, name string) (string, string, error) {
+	finalizeUploadMu.Lock()
+	defer finalizeUploadMu.Unlock()
+	for attempt := 0; attempt < 8; attempt++ {
+		finalPath, finalName, err := uniqueFilePath(dir, name)
+		if err != nil {
+			return "", "", err
+		}
+		if err := os.Link(tmpPath, finalPath); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			// FAT and exFAT have no hard links; the mutex still keeps Prilo's own uploads apart.
+			if err := os.Rename(tmpPath, finalPath); err != nil {
+				return "", "", err
+			}
+			return finalPath, finalName, nil
+		}
+		_ = os.Remove(tmpPath)
+		return finalPath, finalName, nil
+	}
+	return "", "", os.ErrExist
+}
+
+// markFromOtherComputer adds the Mark of the Web, so Windows warns before running a received program
+// and Office opens received documents in Protected View, as it does for browser downloads.
+func markFromOtherComputer(path string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if err := os.WriteFile(path+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o600); err != nil {
+		log.Printf("file upload mark of the web: %v", err)
+	}
 }
 
 func uniqueFilePath(dir, name string) (string, string, error) {
@@ -356,14 +398,11 @@ func handleFileUpload(token string, clip *clipboardBridge, store *fileStore, res
 			return
 		}
 
-		finalPath, finalName, err := uniqueFilePath(dir, name)
+		markFromOtherComputer(tmpPath)
+		// os.Rename replaces an existing file on Windows, so picking a free name and renaming must not race.
+		finalPath, finalName, err := finalizeUpload(tmpPath, dir, name)
 		if err != nil {
-			log.Printf("file upload unique path: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if err := os.Rename(tmpPath, finalPath); err != nil {
-			log.Printf("file upload rename: %v", err)
+			log.Printf("file upload finalize: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -432,12 +471,12 @@ func handleFileDownload(token string, store *fileStore) http.HandlerFunc {
 			if err != nil {
 				return
 			}
-			_, _ = copyWithLargeBuffer(gz, f)
+			_, _ = copyWithLargeBuffer(gz, io.LimitReader(f, info.Size()))
 			_ = gz.Close()
 			return
 		}
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 		w.WriteHeader(http.StatusOK)
-		_, _ = copyWithLargeBuffer(w, f)
+		_, _ = copyWithLargeBuffer(w, io.LimitReader(f, info.Size()))
 	}
 }

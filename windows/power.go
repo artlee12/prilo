@@ -11,9 +11,13 @@ import (
 )
 
 type powerController struct {
-	mu   sync.Mutex
-	last time.Time
-	lock func() error
+	lockMu       sync.Mutex
+	shutdownMu   sync.Mutex
+	last         time.Time
+	lastShutdown time.Time
+	lock         func() error
+	// shutdown keeps /power/shutdown working for Homebridge plugin 0.9, which turns the PC off.
+	shutdown func() error
 }
 
 func powerToken(inputToken string) string {
@@ -37,7 +41,13 @@ func (p *powerController) register(mux *http.ServeMux, token string) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/power/lock", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/power/lock", p.action(token, "Lock workstation", 2*time.Second, &p.lockMu, &p.last, p.lock))
+	mux.HandleFunc("/power/shutdown", p.action(token, "Power shutdown", 10*time.Second, &p.shutdownMu, &p.lastShutdown, p.shutdown))
+}
+
+// action serves a rate-limited POST endpoint; repeats inside the interval succeed without acting again.
+func (p *powerController) action(token, name string, interval time.Duration, mu *sync.Mutex, last *time.Time, fn func() error) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
 		rc := http.NewResponseController(w)
 		_ = rc.SetReadDeadline(time.Now().Add(5 * time.Second))
 		_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -49,16 +59,20 @@ func (p *powerController) register(mux *http.ServeMux, token string) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if time.Since(p.last) >= 2*time.Second {
-			if err := p.lock(); err != nil {
-				log.Printf("Lock workstation failed: %v", err)
+		if fn == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Since(*last) >= interval {
+			if err := fn(); err != nil {
+				log.Printf("%s failed: %v", name, err)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			p.last = time.Now()
+			*last = time.Now()
 		}
 		w.WriteHeader(http.StatusAccepted)
-	})
+	}
 }
