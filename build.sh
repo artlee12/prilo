@@ -16,7 +16,16 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$staged/Contents/Resources/Prilo.icns"
 cp mac/Info.plist "$staged/Contents/Info.plist"
-swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -module-cache-path "$cache" \
+sdk="${SDKROOT:-$(xcrun --show-sdk-path)}"
+if [ -z "${SDKROOT:-}" ]; then
+    dev_dir="$(xcode-select -p 2>/dev/null || true)"
+    if [ "$dev_dir" = "/Library/Developer/CommandLineTools" ] \
+        && [ ! -e "$dev_dir/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ] \
+        && [ -d "$dev_dir/SDKs/MacOSX26.sdk" ]; then
+        sdk="$dev_dir/SDKs/MacOSX26.sdk"
+    fi
+fi
+swiftc -swift-version 5 -O -sdk "$sdk" -target arm64-apple-macos14.0 -module-cache-path "$cache" \
     mac/*.swift -o "$staged/Contents/MacOS/Prilo"
 scripts/sign-mac.sh sign "$staged"
 ditto -c -k --keepParent "$staged" "$cache/Prilo-Mac.zip"

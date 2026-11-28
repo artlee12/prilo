@@ -12,6 +12,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         with Receiver() as receiver:
+            ver = f" v{receiver.version}" if receiver.version else ""
+            print(f"Prilo Receiver{ver}", flush=True)
+            print("Update in cmd: python -m pip install --upgrade --no-cache-dir --index-url https://pypi.org/simple prilo-receiver", flush=True)
             if args.manual:
                 print(receiver.connection_details(), flush=True)
                 print("Enter refreshes the details; Ctrl+C stops.", flush=True)

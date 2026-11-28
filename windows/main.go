@@ -29,14 +29,27 @@ type event struct {
 	Down bool
 }
 
+const (
+	bottomReturnPush int32 = 60
+	bottomPushWindow       = 250 * time.Millisecond
+)
+
+func abs32(v int32) int32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 type receiver struct {
-	stopped    bool
-	mu         sync.Mutex
-	last       time.Time
-	bottomPush int32
-	enteredAt  time.Time
-	keys       map[uint16]bool
-	buttons    map[uint16]bool
+	stopped        bool
+	mu             sync.Mutex
+	last           time.Time
+	bottomPush     int32
+	lastBottomPush time.Time
+	enteredAt      time.Time
+	keys           map[uint16]bool
+	buttons        map[uint16]bool
 }
 
 func (r *receiver) release() {
@@ -58,7 +71,8 @@ func (r *receiver) apply(events []event) (bool, error) {
 	if r.stopped {
 		return false, http.ErrServerClosed
 	}
-	r.last = time.Now()
+	now := time.Now()
+	r.last = now
 	for _, e := range events {
 		if e.Kind == "release" {
 			r.release()
@@ -66,16 +80,25 @@ func (r *receiver) apply(events []event) (bool, error) {
 		}
 		if e.Kind == "enter" {
 			r.bottomPush = 0
-			r.enteredAt = time.Now()
+			r.lastBottomPush = time.Time{}
+			r.enteredAt = now
+		}
+		if e.Kind == "button" {
+			r.bottomPush = 0
 		}
 		if e.Kind == "move" {
-			if e.Y > 0 && time.Since(r.enteredAt) >= 200*time.Millisecond && atBottom() {
+			if len(r.buttons) == 0 && e.Y > 0 && abs32(e.X) <= e.Y && now.Sub(r.enteredAt) >= 200*time.Millisecond && atBottom() {
+				if !r.lastBottomPush.IsZero() && now.Sub(r.lastBottomPush) > bottomPushWindow {
+					r.bottomPush = 0
+				}
+				r.lastBottomPush = now
 				r.bottomPush += e.Y
-				if r.bottomPush >= 8 {
+				if r.bottomPush >= bottomReturnPush {
+					r.bottomPush = 0
 					r.release()
 					return true, nil
 				}
-			} else if e.Y != 0 {
+			} else if e.Y != 0 || e.X != 0 {
 				r.bottomPush = 0
 			}
 		}
@@ -284,14 +307,19 @@ func startReceiver(onServerError func(error)) (*receiverService, error) {
 
 	mux := http.NewServeMux()
 	var control sync.Mutex
-	mux.HandleFunc("/stream", inputStreamContext(ctx, r, &control, token))
+	clip := newClipboardBridge()
+	files := newFileStore()
+	mux.HandleFunc("/stream", inputStreamWithBridge(ctx, r, &control, token, clip, files))
 	mux.HandleFunc("/device", deviceInfo(token))
+	mux.HandleFunc("/file", handleFileUpload(token, clip, files, resolveFileDestination))
+	mux.HandleFunc("/file/download", handleFileDownload(token, files))
 	invite.register(mux, token)
-	power := &powerController{shutdown: shutdownWindows}
+	power := &powerController{lock: lockWindows, shutdown: shutdownWindows}
 	power.register(mux, powerToken(token))
-	vpn := &vpnController{open: openHappLink}
-	vpn.register(mux, powerToken(token))
 	mux.HandleFunc("/input", func(w http.ResponseWriter, req *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if req.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -324,8 +352,13 @@ func startReceiver(onServerError func(error)) (*receiverService, error) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	server := &http.Server{
-		Handler: mux, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
-		ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second, IdleTimeout: 15 * time.Second,
+		Handler:           mux,
+		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		ReadHeaderTimeout: 5 * time.Second,
+		// Defaults for every route; /file and /file/download extend their own deadlines.
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  30 * time.Second,
 	}
 	service := &receiverService{listener: listener, server: server, input: r, invite: invite, cancel: cancel, done: ctx.Done(), discoveryDone: discoveryDone,
 		details: func() string { return connectionDetails(token, fingerprint) }}

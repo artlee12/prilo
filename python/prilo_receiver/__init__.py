@@ -40,7 +40,7 @@ def _read(library, name, field="code"):
         library.PriloFree(pointer)
     if "error" in result:
         raise RuntimeError(result["error"])
-    return result[field]
+    return result[field], result
 
 
 class Receiver:
@@ -49,6 +49,7 @@ class Receiver:
     def __init__(self):
         self._running = False
         self.pairing_code = None
+        self.version = ""
 
     def start(self):
         """Start the receiver and return its one-time pairing code."""
@@ -57,17 +58,18 @@ class Receiver:
             if _active_receiver is not None:
                 raise RuntimeError("A Prilo Receiver is already running in this Python process.")
             library = _native()
-            code = _read(library, "PriloStart")
+            code, raw = _read(library, "PriloStart")
             self._running = True
             _active_receiver = self
             self.pairing_code = code
+            self.version = raw.get("version", "")
             return code
 
     def new_pairing_code(self):
         with _lock:
             if not self._running:
                 raise RuntimeError("Prilo Receiver is not running.")
-            self.pairing_code = _read(_native(), "PriloNewPairingCode")
+            self.pairing_code, _ = _read(_native(), "PriloNewPairingCode")
             return self.pairing_code
 
     def connection_details(self):
@@ -75,7 +77,8 @@ class Receiver:
         with _lock:
             if not self._running:
                 raise RuntimeError("Prilo Receiver is not running.")
-            return _read(_native(), "PriloConnectionDetails", "details")
+            details, _ = _read(_native(), "PriloConnectionDetails", "details")
+            return details
 
     def close(self):
         global _active_receiver
@@ -85,6 +88,7 @@ class Receiver:
                 self._running = False
                 _active_receiver = None
                 self.pairing_code = None
+                self.version = ""
 
     def __enter__(self):
         self.start()

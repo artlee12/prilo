@@ -22,6 +22,7 @@ var hosted struct {
 type libraryResponse struct {
 	Code    string `json:"code,omitempty"`
 	Details string `json:"details,omitempty"`
+	Version string `json:"version,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -57,7 +58,7 @@ func PriloStart() *C.char {
 		return libraryResult("", "Could not create the Prilo pairing code.")
 	}
 	hosted.service = service
-	return libraryResult(code, "")
+	return (libraryResponse{Code: code, Version: version}).encode()
 }
 
 //export PriloNewPairingCode

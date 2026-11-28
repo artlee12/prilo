@@ -147,7 +147,11 @@ func TestPowerTokenDerivation(t *testing.T) {
 func TestPowerEndpoints(t *testing.T) {
 	calls := 0
 	var failure error
-	power := &powerController{shutdown: func() error { calls++; return failure }}
+	shutdowns := 0
+	power := &powerController{
+		lock:     func() error { calls++; return failure },
+		shutdown: func() error { shutdowns++; return nil },
+	}
 	token := powerToken(testToken)
 	mux := http.NewServeMux()
 	power.register(mux, token)
@@ -166,23 +170,32 @@ func TestPowerEndpoints(t *testing.T) {
 	if code := do("GET", "/power/status", testToken); code != http.StatusUnauthorized {
 		t.Errorf("input token on power endpoint = %d, want 401", code)
 	}
-	if code := do("GET", "/power/shutdown", token); code != http.StatusMethodNotAllowed {
-		t.Errorf("GET shutdown = %d, want 405", code)
+	if code := do("GET", "/power/lock", token); code != http.StatusMethodNotAllowed {
+		t.Errorf("GET lock = %d, want 405", code)
 	}
-	if code := do("POST", "/power/shutdown", ""); code != http.StatusUnauthorized || calls != 0 {
-		t.Errorf("anonymous shutdown = %d calls=%d, want 401 and no shutdown", code, calls)
+	if code := do("POST", "/power/lock", ""); code != http.StatusUnauthorized || calls != 0 {
+		t.Errorf("anonymous lock = %d calls=%d, want 401 and no lock", code, calls)
 	}
 
-	failure = errors.New("shutdown.exe failed")
-	if code := do("POST", "/power/shutdown", token); code != http.StatusServiceUnavailable {
-		t.Errorf("failed shutdown = %d, want 503", code)
+	failure = errors.New("LockWorkStation failed")
+	if code := do("POST", "/power/lock", token); code != http.StatusServiceUnavailable {
+		t.Errorf("failed lock = %d, want 503", code)
 	}
 	failure = nil
-	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || calls != 2 {
-		t.Errorf("shutdown after failure = %d calls=%d, want 202 and a retry", code, calls)
+	if code := do("POST", "/power/lock", token); code != http.StatusAccepted || calls != 2 {
+		t.Errorf("lock after failure = %d calls=%d, want 202 and a retry", code, calls)
 	}
-	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || calls != 2 {
-		t.Errorf("repeat within 10 s = %d calls=%d, want 202 without a second shutdown", code, calls)
+	if code := do("POST", "/power/lock", token); code != http.StatusAccepted || calls != 2 {
+		t.Errorf("repeat within 2 s = %d calls=%d, want 202 without a second lock", code, calls)
+	}
+	if code := do("POST", "/power/shutdown", ""); code != http.StatusUnauthorized || shutdowns != 0 {
+		t.Errorf("anonymous shutdown = %d shutdowns=%d, want 401 and no shutdown", code, shutdowns)
+	}
+	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || shutdowns != 1 {
+		t.Errorf("shutdown = %d shutdowns=%d, want 202 and one shutdown", code, shutdowns)
+	}
+	if code := do("POST", "/power/shutdown", token); code != http.StatusAccepted || shutdowns != 1 {
+		t.Errorf("repeat shutdown = %d shutdowns=%d, want 202 without a second shutdown", code, shutdowns)
 	}
 }
 

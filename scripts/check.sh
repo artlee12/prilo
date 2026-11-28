@@ -18,7 +18,16 @@ section "Windows receiver: vet (windows) + tests (host)"
 section "Mac app: typecheck + logic tests"
 cache="$(mktemp -d "${TMPDIR:-/tmp}/prilo-check.XXXXXX")"
 trap 'rm -rf "$cache"' EXIT
-swiftc -swift-version 5 -typecheck -target arm64-apple-macos14.0 -module-cache-path "$cache" mac/*.swift
+sdk="${SDKROOT:-$(xcrun --show-sdk-path)}"
+if [ -z "${SDKROOT:-}" ]; then
+    dev_dir="$(xcode-select -p 2>/dev/null || true)"
+    if [ "$dev_dir" = "/Library/Developer/CommandLineTools" ] \
+        && [ ! -e "$dev_dir/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ] \
+        && [ -d "$dev_dir/SDKs/MacOSX26.sdk" ]; then
+        sdk="$dev_dir/SDKs/MacOSX26.sdk"
+    fi
+fi
+swiftc -swift-version 5 -typecheck -sdk "$sdk" -target arm64-apple-macos14.0 -module-cache-path "$cache" mac/*.swift
 scripts/test-mac.sh
 
 section "Homebridge plugin"

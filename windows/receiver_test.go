@@ -130,12 +130,15 @@ func TestBottomPushReturnsControl(t *testing.T) {
 	enterSettled(t, r)
 	r.keys[0x1d] = true
 	setBottom(true)
-	if returned, _ := r.apply([]event{{Kind: "move", Y: 5}}); returned {
-		t.Fatal("5 px push must not return yet")
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 25}}); returned {
+		t.Fatal("25 px push must not return (Start menu / taskbar protection)")
 	}
-	returned, err := r.apply([]event{{Kind: "move", Y: 3}})
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 30}}); returned {
+		t.Fatal("55 px push must not return yet")
+	}
+	returned, err := r.apply([]event{{Kind: "move", Y: 5}})
 	if err != nil || !returned {
-		t.Fatalf("8 px push at bottom: returned=%v err=%v, want true", returned, err)
+		t.Fatalf("60 px push at bottom: returned=%v err=%v, want true", returned, err)
 	}
 	if len(r.keys) != 0 {
 		t.Error("returning control must release held keys")
@@ -149,20 +152,47 @@ func TestBottomPushIgnoredRightAfterEnter(t *testing.T) {
 		t.Fatal(err)
 	}
 	setBottom(true)
-	if returned, _ := r.apply([]event{{Kind: "move", Y: 50}}); returned {
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 100}}); returned {
 		t.Fatal("push within 200 ms of entering must not bounce control back")
 	}
 }
 
-func TestBottomPushResetByUpwardMove(t *testing.T) {
+func TestBottomPushResetByUpwardOrHorizontalMove(t *testing.T) {
 	resetFake(t)
 	r := newReceiver()
 	enterSettled(t, r)
 	setBottom(true)
-	r.apply([]event{{Kind: "move", Y: 6}})
+	r.apply([]event{{Kind: "move", Y: 40}})
 	r.apply([]event{{Kind: "move", Y: -1}})
-	if returned, _ := r.apply([]event{{Kind: "move", Y: 6}}); returned {
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 40}}); returned {
 		t.Fatal("an upward move must reset the accumulated push")
+	}
+	r.apply([]event{{Kind: "move", X: 20, Y: 5}})
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 40}}); returned {
+		t.Fatal("horizontal motion along the taskbar must reset the accumulated push")
+	}
+}
+
+func TestBottomPushIgnoredWhileDragging(t *testing.T) {
+	resetFake(t)
+	r := newReceiver()
+	enterSettled(t, r)
+	setBottom(true)
+	r.apply([]event{{Kind: "button", Code: 0, Down: true}})
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 100}}); returned {
+		t.Fatal("dragging at the bottom edge must not return control")
+	}
+}
+
+func TestBottomPushExpiresAfterPause(t *testing.T) {
+	resetFake(t)
+	r := newReceiver()
+	enterSettled(t, r)
+	setBottom(true)
+	r.apply([]event{{Kind: "move", Y: 40}})
+	r.lastBottomPush = time.Now().Add(-300 * time.Millisecond)
+	if returned, _ := r.apply([]event{{Kind: "move", Y: 30}}); returned {
+		t.Fatal("stale downward push after a pause must not accumulate")
 	}
 }
 
@@ -181,7 +211,7 @@ func TestReturnStopsProcessingBatch(t *testing.T) {
 	enterSettled(t, r)
 	setBottom(true)
 	before := len(sentEvents())
-	returned, _ := r.apply([]event{{Kind: "move", Y: 10}, {Kind: "key", Code: 0x1e, Down: true}})
+	returned, _ := r.apply([]event{{Kind: "move", Y: 60}, {Kind: "key", Code: 0x1e, Down: true}})
 	if !returned {
 		t.Fatal("expected return")
 	}

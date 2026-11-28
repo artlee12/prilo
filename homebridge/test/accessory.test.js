@@ -13,8 +13,8 @@ require.cache[transportPath] = {
   exports: {
     offlineCodes: new Set(['EHOSTUNREACH', 'ECONNREFUSED', 'ETIMEDOUT']),
     parse: config => ({ host: config.host }),
-    request: async (_connection, shutdown) => {
-      stub.calls.push(shutdown ? 'shutdown' : 'status');
+    request: async (_connection, lock) => {
+      stub.calls.push(lock ? 'lock' : 'status');
       if (stub.error) throw stub.error;
       return stub.status;
     },
@@ -72,12 +72,12 @@ test('unexpected status or error is surfaced to HomeKit', async () => {
   assert.equal(log.warnings.length, 2);
 });
 
-test('turning off requests a shutdown and requires 202', async () => {
+test('turning off requests a lock and requires 202', async () => {
   const pc = accessory();
   pc.wakingUntil = Date.now() + 45000;
   stub.status = 202;
   await pc.setOn(false);
-  assert.deepEqual(stub.calls, ['shutdown']);
+  assert.deepEqual(stub.calls, ['lock']);
   assert.equal(pc.wakingUntil, 0);
   stub.status = 204;
   await assert.rejects(pc.setOn(false), /HTTP 204/);

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 var messageBoxYesNo uintptr = 0x4 // MB_YESNO
@@ -61,6 +63,10 @@ func installUpdate(asset releaseAsset) (string, error) {
 	path, err := os.Executable()
 	if err != nil {
 		return "", err
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if strings.HasPrefix(base, "python") {
+		return "", fmt.Errorf("hosted inside Python; update via pip")
 	}
 	fresh, old := path+".new", path+".old"
 	if err := download(asset, fresh); err != nil {

@@ -13,7 +13,7 @@ enum FormField: Hashable {
     case name, address, code, fingerprint
 }
 
-/// State shared between the app controller (Prilo) and the SwiftUI window.
+/// State shared between the app controller (PriloApp) and the SwiftUI window.
 final class WindowModel: ObservableObject {
     @Published var state: ConnectionWindow.State = .idle
     @Published var profiles: [PCProfile] = []
@@ -35,11 +35,11 @@ final class WindowModel: ObservableObject {
     @Published var renaming: PCProfile?
     @Published var settings = ControlSettings()
 
-    weak var owner: Prilo?
+    weak var owner: PriloApp?
     let power: PowerModel
     let updates = UpdateModel()
 
-    init(owner: Prilo) {
+    init(owner: PriloApp) {
         self.owner = owner
         power = PowerModel(profiles: owner.profiles)
         power.discoveredHost = { [weak owner] fingerprint in
@@ -197,7 +197,7 @@ final class ConnectionWindow: NSWindow {
 
     var inputMonitoring: Bool { model.monitoring }
 
-    init(owner: Prilo) {
+    init(owner: PriloApp) {
         model = WindowModel(owner: owner)
         super.init(contentRect: NSRect(x: 0, y: 0, width: 880, height: 640),
                    styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

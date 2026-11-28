@@ -17,6 +17,9 @@ struct PCSecrets: Codable, Equatable {
 }
 
 struct ControlSettings {
+    static let defaultCursorSpeed: Double = 0.50
+    static let defaultScrollSmoothness: Double = 1.50
+
     private let defaults = UserDefaults.standard
 
     var autoConnect: Bool {
@@ -31,9 +34,71 @@ struct ControlSettings {
         get { defaults.object(forKey: "commandIsControl") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "commandIsControl") }
     }
+    var commandSpaceSwitchesLanguage: Bool {
+        get { defaults.object(forKey: "commandSpaceSwitchesLanguage") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "commandSpaceSwitchesLanguage") }
+    }
+    var showLayoutIndicator: Bool {
+        get { defaults.object(forKey: "showLayoutIndicator") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showLayoutIndicator") }
+    }
+    var clipboardSync: Bool {
+        get { defaults.object(forKey: "clipboardSync") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "clipboardSync") }
+    }
     var speed: Double {
-        get { defaults.object(forKey: "cursorSpeed") as? Double ?? 1 }
+        get { defaults.object(forKey: "cursorSpeed") as? Double ?? Self.defaultCursorSpeed }
         set { defaults.set(newValue, forKey: "cursorSpeed") }
+    }
+    var scrollSmoothness: Double {
+        get { defaults.object(forKey: "scrollSmoothness") as? Double ?? Self.defaultScrollSmoothness }
+        set { defaults.set(newValue, forKey: "scrollSmoothness") }
+    }
+    var commandLLocksWindows: Bool {
+        get { defaults.object(forKey: "commandLLocksWindows") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "commandLLocksWindows") }
+    }
+    var keepWindowsAwake: Bool {
+        get { defaults.object(forKey: "keepWindowsAwake") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "keepWindowsAwake") }
+    }
+    var lockWindowsOnMacLock: Bool {
+        get { defaults.object(forKey: "lockWindowsOnMacLock") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "lockWindowsOnMacLock") }
+    }
+    var threeFingerSwipeAction: ThreeFingerSwipeAction {
+        get {
+            (defaults.string(forKey: "threeFingerSwipeAction")).flatMap(ThreeFingerSwipeAction.init(rawValue:)) ?? .desktops
+        }
+        set { defaults.set(newValue.rawValue, forKey: "threeFingerSwipeAction") }
+    }
+    var threeFingerSwipeUp: Bool {
+        get { defaults.object(forKey: "threeFingerSwipeUp") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "threeFingerSwipeUp") }
+    }
+    var threeFingerSwipeDown: Bool {
+        get { defaults.object(forKey: "threeFingerSwipeDown") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "threeFingerSwipeDown") }
+    }
+    var pinchToZoom: Bool {
+        get { defaults.object(forKey: "pinchToZoom") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "pinchToZoom") }
+    }
+    var macShortcuts: Bool {
+        get { defaults.object(forKey: "macShortcuts") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "macShortcuts") }
+    }
+    var fileTransferEnabled: Bool {
+        get { defaults.object(forKey: "fileTransferEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "fileTransferEnabled") }
+    }
+    var clipboardFileSync: Bool {
+        get { defaults.object(forKey: "clipboardFileSync") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "clipboardFileSync") }
+    }
+    var fileDestination: String {
+        get { defaults.string(forKey: "fileDestination") ?? "downloads" }
+        set { defaults.set(newValue, forKey: "fileDestination") }
     }
 }
 

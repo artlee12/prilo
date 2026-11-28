@@ -23,6 +23,20 @@ final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
         browser.searchForServices(ofType: "_prilo._tcp.", inDomain: "local.")
     }
 
+    func restart() {
+        browser.stop()
+        for service in services.values {
+            service.stop()
+        }
+        services.removeAll()
+        if !peers.isEmpty {
+            peers.removeAll()
+            didChange?(computers)
+        }
+        browser.delegate = self
+        browser.searchForServices(ofType: "_prilo._tcp.", inDomain: "local.")
+    }
+
     func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
         services[service.name] = service
         service.delegate = self
