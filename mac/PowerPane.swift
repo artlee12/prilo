@@ -1,14 +1,16 @@
 import AppKit
 import SwiftUI
 
-/// Power and Wake-on-LAN actions for the PC open in the main window.
+/// Power, Wake-on-LAN and VPN actions for the PC open in the main window.
 final class PowerModel: ObservableObject {
     private let profiles: Profiles
     @Published private(set) var profile: PCProfile?
     @Published var mac = ""
     @Published var broadcast = "255.255.255.255"
     @Published var notice = ""
+    @Published var vpnNotice = ""
     @Published private(set) var busy = false
+    @Published private(set) var vpnBusy = false
     private var wakeWatch: (profileID: UUID, until: Date)?
     var discoveredHost: ((String) -> String?)?
 
@@ -28,6 +30,7 @@ final class PowerModel: ObservableObject {
         broadcast = next?.wakeBroadcast ?? "255.255.255.255"
         wakeWatch = nil
         notice = ""
+        vpnNotice = ""
     }
 
     /// Picks up saved changes (name, Wake-on-LAN) without clearing messages.
@@ -151,6 +154,29 @@ final class PowerModel: ObservableObject {
         }
     }
 
+    func vpn(connect: Bool) {
+        guard let profile, !vpnBusy, let access = access(for: profile) else { return }
+        vpnBusy = true
+        vpnNotice = connect ? "Включаем VPN на Windows…" : "Выключаем VPN на Windows…"
+        access.vpn(connect: connect) { [weak self] result in
+            Diagnostics.shared.record("vpn \(connect ? "on" : "off") \(result.description)")
+            guard let self else { return }
+            self.vpnBusy = false
+            switch result {
+            case .http(202):
+                self.vpnNotice = connect
+                    ? "Happ на Windows получил команду включить VPN. Состояние туннеля видно в Happ."
+                    : "Happ на Windows получил команду выключить VPN."
+            case .http(424): self.vpnNotice = "Happ не установлен на Windows. Установи Happ для Windows и выбери в нём профиль."
+            case .http(429): self.vpnNotice = "Подожди секунду и повтори."
+            case .http(404): self.vpnNotice = "Обнови приёмник Prilo на Windows до 0.10.1, чтобы управлять VPN."
+            case .http(401): self.vpnNotice = "Код питания не подошёл. Переподключи ПК в Prilo."
+            case .http(503): self.vpnNotice = "Windows не смогла передать команду Happ. Проверь журнал приёмника."
+            default: self.vpnNotice = result.unreachableHint ?? "Приёмник ответил неожиданно (\(result.description)). Проверь журнал приёмника."
+            }
+        }
+    }
+
     func copyHomeConfig() {
         guard let profile, let wake = target(), let access = access(for: profile) else { return }
         do {
@@ -219,6 +245,36 @@ struct PowerSections: View {
             }
         } header: {
             Text("Питание")
+        }
+
+        Section {
+            HStack(spacing: 10) {
+                Button {
+                    model.vpn(connect: true)
+                } label: {
+                    Label("Включить VPN", systemImage: "lock.shield")
+                }
+                .secondaryActionStyle()
+                Button {
+                    model.vpn(connect: false)
+                } label: {
+                    Label("Выключить VPN", systemImage: "lock.open")
+                }
+                .secondaryActionStyle()
+                Spacer()
+                if model.vpnBusy { ProgressView().controlSize(.small) }
+            }
+            .disabled(model.profile == nil || model.vpnBusy)
+            if !model.vpnNotice.isEmpty {
+                Label(model.vpnNotice, systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text("VPN на Windows")
+        } footer: {
+            Text("Команда уходит в Happ на этом ПК и применяется к профилю, выбранному в Happ. Чтобы Prilo не терял связь с ПК, в Happ должен быть включён обход локальной сети.")
+                .foregroundStyle(.secondary)
         }
     }
 }

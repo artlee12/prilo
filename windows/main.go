@@ -316,6 +316,8 @@ func startReceiver(onServerError func(error)) (*receiverService, error) {
 	invite.register(mux, token)
 	power := &powerController{lock: lockWindows, shutdown: shutdownWindows}
 	power.register(mux, powerToken(token))
+	vpn := &vpnController{open: openHappLink}
+	vpn.register(mux, powerToken(token))
 	mux.HandleFunc("/input", func(w http.ResponseWriter, req *http.Request) {
 		rc := http.NewResponseController(w)
 		_ = rc.SetReadDeadline(time.Now().Add(5 * time.Second))

@@ -18,6 +18,15 @@ struct PowerAccess {
         connection.perform(method: lock ? "POST" : "GET", completion: completion)
     }
 
+    /// Turns the VPN on or off through Happ on the Windows PC.
+    func vpn(connect: Bool, _ completion: @escaping (Response) -> Void) {
+        guard let url = URL(string: "https://\(profile.host):43821/vpn/\(connect ? "connect" : "disconnect")") else {
+            completion(.failure(.badURL))
+            return
+        }
+        Connection(url: url, code: code, fingerprint: secrets.fingerprint).perform(method: "POST", completion: completion)
+    }
+
     func homebridgeConfig(wake: WakeTarget) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: [
             "accessory": "PriloPC",
